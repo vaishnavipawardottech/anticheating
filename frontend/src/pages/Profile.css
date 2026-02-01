@@ -1,0 +1,142 @@
+.profile-container {
+  width: 100%;
+  height: 100%;
+  background-color: white;
+}
+
+.profile-card {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.profile-header {
+  background-color: white;
+  padding: 2rem;
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  color: #111827;
+  flex-shrink: 0;
+  border-bottom: 1px solid #E5E7EB;
+}
+
+.profile-avatar-large {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background-color: #0061a1;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 2rem;
+  flex-shrink: 0;
+}
+
+.profile-avatar-large img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.profile-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.profile-name {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.profile-role {
+  font-size: 0.875rem;
+  opacity: 0.9;
+  margin: 0;
+}
+
+.profile-info {
+  padding: 2rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 2rem;
+  flex: 1;
+}
+
+.profile-info-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.profile-icon {
+  color: #0061a1;
+  flex-shrink: 0;
+  margin-top: 0.25rem;
+}
+
+.profile-info-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  flex: 1;
+}
+
+.profile-info-label {
+  font-size: 0.75rem;
+  color: #6B7280;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.profile-info-value {
+  font-size: 0.875rem;
+  color: #111827;
+  font-weight: 400;
+}
+
+.profile-actions {
+  padding: 1.5rem 2rem;
+  background-color: #F9FAFB;
+  display: flex;
+  gap: 1rem;
+  flex-shrink: 0;
+  border-top: 1px solid #E5E7EB;
+}
+
+.profile-btn {
+  padding: 0.625rem 1.5rem;
+  border: none;
+  border-radius: 0.25rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.profile-btn.primary {
+  background-color: #0061a1;
+  color: white;
+}
+
+.profile-btn.primary:hover {
+  background-color: #004d82;
+}
+
+.profile-btn.secondary {
+  background-color: white;
+  color: #374151;
+  border: 1px solid #D1D5DB;
+}
+
+.profile-btn.secondary:hover {
+  background-color: #F9FAFB;
+  border-color: #9CA3AF;
+}
