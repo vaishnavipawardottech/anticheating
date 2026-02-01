@@ -1,8 +1,13 @@
 import React from 'react';
-import { User, Mail, Phone, MapPin, Calendar } from 'lucide-react';
+import { User, Mail, Phone, MapPin, Calendar, ArrowLeft } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import './Profile.css';
 
 const Profile = () => {
+  const navigate = useNavigate();
+  const handleBack = () => {
+    navigate('/dashboard');
+  };
   const user = {
     name: 'Rushikesh Ghodke',
     email: 'rghodke@assessease.com',
@@ -20,6 +25,13 @@ const Profile = () => {
   return (
     <div className="profile-container">
       <div className="profile-card">
+        <div className="change-password-header">
+          <button className="back-btn" onClick={handleBack}>
+            <ArrowLeft size={20} />
+          </button>
+          <h1 className="change-password-title">Profile</h1>
+        </div>
+
         <div className="profile-header">
           <div className="profile-avatar-large">
             {user.avatar ? (
@@ -70,7 +82,7 @@ const Profile = () => {
 
         <div className="profile-actions">
           <button className="profile-btn primary">Edit Profile</button>
-          <button className="profile-btn secondary">Change Password</button>
+          <button className="profile-btn secondary" onClick={() => navigate('/profile/change-password')}>Change Password</button>
         </div>
       </div>
     </div>

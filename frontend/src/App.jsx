@@ -2,6 +2,8 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import Layout from './Layout'
 import Profile from './pages/Profile'
 import CreateExam from './pages/CreateExam'
+import AllExams from './pages/AllExams'
+import ChangePassword from './pages/ChangePassword'
 import Login from './pages/Login'
 import './App.css'
 
@@ -20,6 +22,8 @@ function App() {
                 </div>
               } />
               <Route path="/profile" element={<Profile />} />
+              <Route path="/profile/change-password" element={<ChangePassword />} />
+              <Route path="/exams" element={<AllExams />} />
               <Route path="/exams/create" element={<CreateExam />} />
             </Routes>
           </Layout>

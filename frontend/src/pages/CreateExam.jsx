@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Sparkles, History } from 'lucide-react';
+import { Send, Sparkles, History, Trash2 } from 'lucide-react';
 import './CreateExam.css';
 
 const CreateExam = () => {
@@ -12,6 +12,8 @@ const CreateExam = () => {
   const [inputMessage, setInputMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [chatToDelete, setChatToDelete] = useState(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -67,17 +69,36 @@ const CreateExam = () => {
     }
   };
 
-  return (
-    <div className="create-exam-container">
-      <div className="create-exam-header">
-        <h1>Create Exam</h1>
-        <button className="history-btn" onClick={() => setShowHistory(!showHistory)}>
-          <History size={20} />
-        </button>
-      </div>
+  const handleDeleteClick = (chatTitle) => {
+    setChatToDelete(chatTitle);
+    setShowDeleteModal(true);
+  };
 
-      <div className="chat-container">
-        <div className="messages-area">
+  const handleConfirmDelete = () => {
+    // Here you would implement the actual delete logic
+    // For now, we'll just close the modal
+    console.log(`Deleting chat: ${chatToDelete}`);
+    setShowDeleteModal(false);
+    setChatToDelete(null);
+  };
+
+  const handleCancelDelete = () => {
+    setShowDeleteModal(false);
+    setChatToDelete(null);
+  };
+
+  return (
+    <>
+      <div className="create-exam-container">
+        <div className="create-exam-header">
+          <h1>Create Exam</h1>
+          <button className="history-btn" onClick={() => setShowHistory(!showHistory)}>
+            <History size={20} />
+          </button>
+        </div>
+
+        <div className="chat-container">
+          <div className="messages-area">
           {messages.map((message, index) => (
             <div key={index} className={`message ${message.role}`}>
               <div className="message-icon">
@@ -142,13 +163,63 @@ const CreateExam = () => {
           </button>
         </div>
         <div className="history-content">
-          <p className="history-empty">No previous conversations yet</p>
+          <div className="chat-item">
+            <div className="chat-item-header">
+              <h3>MongoDB Assessment</h3>
+              <button className="delete-chat-btn" onClick={() => handleDeleteClick('MongoDB Assessment')}>
+                <Trash2 size={16} />
+              </button>
+            </div>
+            <span className="chat-date">2 hours ago</span>
+          </div>
+          <div className="chat-item">
+            <div className="chat-item-header">
+              <h3>MySQL Database Quiz</h3>
+              <button className="delete-chat-btn" onClick={() => handleDeleteClick('MySQL Database Quiz')}>
+                <Trash2 size={16} />
+              </button>
+            </div>
+            <span className="chat-date">Yesterday</span>
+          </div>
+          <div className="chat-item">
+            <div className="chat-item-header">
+              <h3>Python Programming Test</h3>
+              <button className="delete-chat-btn" onClick={() => handleDeleteClick('Python Programming Test')}>
+                <Trash2 size={16} />
+              </button>
+            </div>
+            <span className="chat-date">3 days ago</span>
+          </div>
         </div>
       </div>
 
-      {/* Overlay */}
-      {showHistory && <div className="history-overlay" onClick={() => setShowHistory(false)} />}
-    </div>
+        {/* Overlay */}
+        {showHistory && <div className="history-overlay" onClick={() => setShowHistory(false)} />}
+      </div>
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteModal && (
+        <div className="delete-modal-overlay" onClick={handleCancelDelete}>
+          <div className="delete-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="delete-modal-header">
+              <h3>Delete Chat</h3>
+            </div>
+            <div className="delete-modal-body">
+              <p>Are you sure you want to delete "{chatToDelete}"?</p>
+              <p className="delete-warning">This action cannot be undone.</p>
+            </div>
+            <div className="delete-modal-footer">
+              <button className="delete-modal-cancel" onClick={handleCancelDelete}>
+                Cancel
+              </button>
+              <button className="delete-modal-confirm" onClick={handleConfirmDelete}>
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 };
 
