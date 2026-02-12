@@ -1,0 +1,39 @@
+.env
+
+*.md
+
+# Byte-code files
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+
+# Distribution / packaging
+.Python
+build/
+dist/
+eggs/
+*.egg-info/
+*.egg
+
+# Testing and coverage
+.tox/
+.coverage
+.nox/
+
+# Virtual environment
+venv/
+.venv/
+env/
+.env/
+
+# Editors and IDEs
+# General
+.idea/  # For PyCharm and other JetBrains IDEs
+.vscode/ # For VS Code
+*.swp
+*~
+.DS_Store # macOS files
+
+# Specific to Python version management
+.python-version
