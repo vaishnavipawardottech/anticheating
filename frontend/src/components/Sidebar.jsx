@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
-import { 
-  LayoutDashboard, 
-  FileText, 
-  HelpCircle, 
-  Users, 
+import {
+  LayoutDashboard,
+  FileText,
+  HelpCircle,
+  Users,
   BarChart3,
   Settings,
   ChevronRight,
@@ -67,6 +67,12 @@ const Sidebar = () => {
       ]
     },
     {
+      key: 'ingest',
+      icon: <FileInput size={20} />,
+      text: 'Ingest Document',
+      path: '/ingest'
+    },
+    {
       key: 'users',
       icon: <Users size={20} />,
       text: 'Users',
@@ -91,7 +97,7 @@ const Sidebar = () => {
   ];
 
   return (
-    <div 
+    <div
       className="sidebar"
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -107,7 +113,7 @@ const Sidebar = () => {
           <li key={item.key} className="sidebar-menu-item">
             {item.submenu ? (
               <>
-                <div 
+                <div
                   className="sidebar-menu-link"
                   onClick={() => toggleSubmenu(item.key)}
                 >

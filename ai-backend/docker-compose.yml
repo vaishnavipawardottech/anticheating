@@ -1,8 +1,6 @@
 services:
   # ==========================================
-  # POSTGRES - Structure Database (Source of Truth)
-  # Stores: Subject → Unit → Concept hierarchy
-  # NOT for embeddings, NOT for documents
+  # POSTGRES - Structure Database
   # ==========================================
   postgres:
     image: postgres:15
@@ -15,42 +13,27 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-academic_user}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
     networks:
       - academic_network
 
   # ==========================================
-  # QDRANT - Vector Database (Semantic Retrieval)
-  # Stores ONLY: Concept chunk embeddings
-  # Must include metadata: subject, unit, concept, content_type
+  # QDRANT - Vector Database
   # ==========================================
   qdrant:
     image: qdrant/qdrant:latest
     container_name: academic_qdrant
     ports:
-      - "6333:6333"  # REST API
-      - "6334:6334"  # gRPC (optional)
+      - "6333:6333"
+      - "6334:6334"
     volumes:
       - qdrant_storage:/qdrant/storage
     environment:
       QDRANT__SERVICE__GRPC_PORT: 6334
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:6333/healthz || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
     networks:
       - academic_network
 
   # ==========================================
   # OLLAMA - Local LLM Runtime
-  # Model: Phi-3 Mini (already installed locally)
-  # Used ONLY for: concept classification, diagram explanation
-  # Context limit: ≤ 500 tokens
   # ==========================================
   ollama:
     image: ollama/ollama:latest
@@ -58,23 +41,10 @@ services:
     ports:
       - "11434:11434"
     volumes:
-      # Reuse local model cache - DO NOT re-download models
-      - ${OLLAMA_MODELS_PATH:-~/.ollama}:/root/.ollama
+      # DO NOT use ~ in docker compose
+      - ${OLLAMA_MODELS_PATH:-/home/youruser/.ollama}:/root/.ollama
     environment:
       OLLAMA_HOST: 0.0.0.0:11434
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 3
-    # Uncomment if GPU available (NVIDIA GTX 1650)
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     networks:
       - academic_network
 
@@ -84,6 +54,4 @@ networks:
 
 volumes:
   postgres_data:
-    driver: local
   qdrant_storage:
-    driver: local

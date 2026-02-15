@@ -5,6 +5,7 @@ import CreateExam from './pages/CreateExam'
 import AllExams from './pages/AllExams'
 import ChangePassword from './pages/ChangePassword'
 import Login from './pages/Login'
+import IngestDocument from './pages/IngestDocument'
 import './App.css'
 
 function App() {
@@ -25,6 +26,7 @@ function App() {
               <Route path="/profile/change-password" element={<ChangePassword />} />
               <Route path="/exams" element={<AllExams />} />
               <Route path="/exams/create" element={<CreateExam />} />
+              <Route path="/ingest" element={<IngestDocument />} />
             </Routes>
           </Layout>
         } />
