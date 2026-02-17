@@ -424,3 +424,35 @@
     width: 100%;
   }
 }
+
+/* Mode Selector */
+.mode-selector {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.25rem;
+  background-color: #F3F4F6;
+  border-radius: 0.5rem;
+}
+
+.mode-btn {
+  flex: 1;
+  padding: 0.625rem 1.25rem;
+  border: none;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  background-color: transparent;
+  color: #6B7280;
+}
+
+.mode-btn:hover {
+  color: #374151;
+}
+
+.mode-btn.active {
+  background-color: white;
+  color: #0061a1;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+}

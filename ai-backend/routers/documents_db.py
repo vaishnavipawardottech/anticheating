@@ -16,12 +16,14 @@ from parsing.document_parser import DocumentParser
 from parsing.cleanup import cleanup_elements
 from parsing.classifier import ElementClassifier
 from parsing.chunker import chunk_elements, compute_section_paths_for_elements, table_to_row_chunks
+from parsing.schemas import SemanticElement
 from database.database import get_db
-from database.models import Document, ParsedElement, DocumentChunk
+from database.models import Document, ParsedElement, DocumentChunk, Concept, Unit
 from database.schemas import DocumentResponse, ParsedElementResponse
 from embeddings import get_embedding_generator
 from embeddings.qdrant_manager import get_qdrant_manager
 from datetime import datetime
+from qdrant_client.models import PointStruct
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -442,6 +444,93 @@ async def upload_and_store_document(
                     print(f"   ⚠ No chunk embeddings to index (skipped)")
             except Exception as e:
                 print(f"   ⚠ Chunk embedding/indexing failed: {str(e)}")
+        
+        # 9c. Auto-align chunks to concepts (NEW: automatic alignment during ingestion)
+        if doc_chunks and saved_chunks:
+            try:
+                print(f"   🎯 Starting automatic chunk alignment...")
+                
+                # Get concepts for this subject
+                concepts = db.query(Concept).join(Unit).filter(Unit.subject_id == subject_id).all()
+                
+                if concepts:
+                    # Import align_batch here to avoid circular dependency
+                    from routers.alignment import align_batch
+                    
+                    # Prepare chunks as SemanticElements for alignment
+                    elements_for_align = [
+                        SemanticElement(
+                            order=c.chunk_index,
+                            element_type="CHUNK",
+                            text=c.text,
+                            page_number=c.page_start,
+                            source_filename=filename,
+                            metadata={},
+                        )
+                        for c in saved_chunks
+                    ]
+                    
+                    # Call Gemini AI to align chunks
+                    batch_results = await align_batch(elements_for_align, concepts)
+                    chunk_index_to_result = {r["order"]: r for r in batch_results}
+                    
+                    # Build concept_id -> unit_id mapping
+                    concept_to_unit = {concept.id: concept.unit_id for concept in concepts}
+                    
+                    # Update chunks with alignment results
+                    aligned_count = 0
+                    for c in saved_chunks:
+                        res = chunk_index_to_result.get(c.chunk_index, {})
+                        concept_id = res.get("concept_id")
+                        c.concept_id = concept_id
+                        c.alignment_confidence = res.get("confidence")
+                        
+                        # Automatically set unit_id from concept's parent unit
+                        if concept_id and concept_id in concept_to_unit:
+                            c.unit_id = concept_to_unit[concept_id]
+                            aligned_count += 1
+                    
+                    db.commit()
+                    
+                    # Update Qdrant payloads with concept_id and unit_id
+                    try:
+                        qdrant = get_qdrant_manager()
+                        for c in saved_chunks:
+                            if c.embedding_vector and c.vector_id:
+                                sp = (c.section_path or "")[:MAX_SECTION_PATH_LEN]
+                                payload = {
+                                    "subject_id": subject_id,
+                                    "document_id": c.document_id,
+                                    "unit_id": c.unit_id,
+                                    "concept_id": c.concept_id,
+                                    "section_path": sp,
+                                    "page_start": c.page_start or 0,
+                                    "page_end": c.page_end or 0,
+                                    "point_type": "chunk",
+                                    "chunk_id": c.id,
+                                }
+                                qdrant.client.upsert(
+                                    collection_name=qdrant.COLLECTION_NAME,
+                                    points=[
+                                        PointStruct(
+                                            id=c.id + qdrant.CHUNK_ID_OFFSET,
+                                            vector=c.embedding_vector,
+                                            payload=payload,
+                                        )
+                                    ],
+                                )
+                        print(f"   ✓ Auto-aligned {aligned_count}/{len(saved_chunks)} chunks to concepts")
+                    except Exception as qdrant_err:
+                        print(f"   ⚠ Qdrant payload update failed: {str(qdrant_err)}")
+                        print(f"   ℹ️  Alignment saved to database, but Qdrant filtering may not work")
+                else:
+                    print(f"   ⚠ No concepts found for subject_id={subject_id}, skipping alignment")
+                    
+            except Exception as align_err:
+                print(f"   ⚠ Auto-alignment failed: {str(align_err)}")
+                print(f"   ℹ️  Document ingested successfully, but chunks not aligned")
+                import traceback
+                traceback.print_exc()
         
         # 10. Update document status
         document.status = "indexed" if embeddings_map else "parsed"

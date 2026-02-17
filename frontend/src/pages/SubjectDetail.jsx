@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Layers, FileText, ArrowLeft, Trash2 } from 'lucide-react';
+import { Layers, FileText, ArrowLeft, Trash2, Upload } from 'lucide-react';
 import './SubjectDetail.css';
 
 const API_BASE = 'http://localhost:8001';
@@ -55,6 +55,13 @@ const SubjectDetail = () => {
                         <ArrowLeft size={20} />
                     </button>
                     <h1 className="subject-detail-title">{subject.name}</h1>
+                    <button 
+                        className="add-docs-btn"
+                        onClick={() => navigate(`/ingest?subjectId=${subjectId}`)}
+                        title="Add more documents to this subject"
+                    >
+                        <Upload size={16} /> Add Documents
+                    </button>
                 </div>
 
                 <div className="subject-detail-content">

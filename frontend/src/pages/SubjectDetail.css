@@ -179,3 +179,24 @@
         grid-template-columns: 1fr;
     }
 }
+
+.add-docs-btn {
+    margin-left: auto;
+    padding: 0.625rem 1rem;
+    border: none;
+    border-radius: 0.5rem;
+    background-color: #0061A1;
+    color: white;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    transition: all 0.2s ease;
+}
+
+.add-docs-btn:hover {
+    background-color: #004d82;
+    box-shadow: 0 2px 4px rgba(0, 97, 161, 0.2);
+}

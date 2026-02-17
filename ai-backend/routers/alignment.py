@@ -106,24 +106,37 @@ async def align_batch(elements: List[SemanticElement], concepts: List[Concept]) 
         # Extract JSON from response
         text = response.strip()
         
-        # Log the response for debugging
-        print(f"📄 Gemini response preview: {text[:200]}...")
+        # Remove markdown code blocks if present
+        if text.startswith("```json"):
+            text = text[7:]
+        if text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
         
-        start_idx = text.find("[")
-        end_idx = text.rfind("]") + 1
-        
-        if start_idx == -1 or end_idx == 0:
-            print(f"❌ No JSON array found. Full response: {text}")
-            raise ValueError("No JSON array found in response")
-        
-        json_str = text[start_idx:end_idx]
-        results = json.loads(json_str)
-        
-        print(f"✅ Parsed {len(results)} alignment results")
-        return results
+        # Try to parse directly first (most common case)
+        try:
+            results = json.loads(text)
+            print(f"✅ Parsed {len(results)} alignment results")
+            return results
+        except json.JSONDecodeError:
+            # If direct parse fails, try to extract array
+            start_idx = text.find("[")
+            end_idx = text.rfind("]")
+            
+            if start_idx == -1 or end_idx == -1:
+                print(f"❌ No JSON array found. Response preview: {text[:500]}...")
+                raise ValueError("No JSON array found in response")
+            
+            json_str = text[start_idx:end_idx + 1]
+            results = json.loads(json_str)
+            print(f"✅ Parsed {len(results)} alignment results")
+            return results
     except Exception as e:
         print(f"❌ Parse error: {str(e)}")
-        print(f"❌ Full response was: {response}")
+        print(f"❌ Response preview (first 500 chars): {response[:500]}")
+        print(f"❌ Response preview (last 500 chars): {response[-500:]}")
         raise HTTPException(status_code=500, detail=f"Failed to parse Gemini response: {str(e)}")
 
 
@@ -251,10 +264,14 @@ async def align_document(request: AlignDocumentRequest, db: Session = Depends(ge
             raise HTTPException(status_code=404, detail=f"No concepts for subject_id={subject_id}")
         batch_results = await align_batch(elements_for_align, concepts)
         order_to_result = {r["order"]: r for r in batch_results}
+        # Build concept_id -> unit_id mapping
+        concept_to_unit = {concept.id: concept.unit_id for concept in concepts}
         for e in elements_db:
             res = order_to_result.get(e.order_index, {})
-            e.concept_id = res.get("concept_id")
+            concept_id = res.get("concept_id")
+            e.concept_id = concept_id
             e.alignment_confidence = res.get("confidence")
+            # Note: ParsedElement doesn't have unit_id field, only concept_id
         db.commit()
         all_results = batch_results
     if request.chunk_ids:
@@ -280,10 +297,16 @@ async def align_document(request: AlignDocumentRequest, db: Session = Depends(ge
             raise HTTPException(status_code=404, detail=f"No concepts for subject_id={subject_id}")
         batch_results = await align_batch(elements_for_align, concepts)
         chunk_index_to_result = {r["order"]: r for r in batch_results}
+        # Build concept_id -> unit_id mapping
+        concept_to_unit = {concept.id: concept.unit_id for concept in concepts}
         for c in chunks:
             res = chunk_index_to_result.get(c.chunk_index, {})
-            c.concept_id = res.get("concept_id")
+            concept_id = res.get("concept_id")
+            c.concept_id = concept_id
             c.alignment_confidence = res.get("confidence")
+            # Automatically set unit_id from concept's parent unit
+            if concept_id and concept_id in concept_to_unit:
+                c.unit_id = concept_to_unit[concept_id]
         db.commit()
         # Update Qdrant payload so concept_id filter works
         try:

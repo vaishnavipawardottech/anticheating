@@ -1,10 +1,16 @@
 import React, { useState } from 'react';
 import { Upload, FileText, Send, Sparkles, ArrowLeft } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import './IngestDocument.css';
 
 const IngestDocument = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const preSelectedSubjectId = searchParams.get('subjectId');
+  
+  const [mode, setMode] = useState(preSelectedSubjectId ? 'existing' : 'new'); // 'new' or 'existing'
+  const [existingSubjects, setExistingSubjects] = useState([]);
+  const [selectedSubjectId, setSelectedSubjectId] = useState(preSelectedSubjectId || '');
   const [subjectName, setSubjectName] = useState('');
   const [rawToc, setRawToc] = useState('');
   const [normalizedToc, setNormalizedToc] = useState('');
@@ -13,6 +19,36 @@ const IngestDocument = () => {
   const [isProcessingToc, setIsProcessingToc] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSavingIndex, setIsSavingIndex] = useState(false);
+
+  // Fetch existing subjects when component mounts
+  React.useEffect(() => {
+    fetchExistingSubjects();
+  }, []);
+
+  const fetchExistingSubjects = async () => {
+    try {
+      const response = await fetch('http://localhost:8001/subjects/with-stats/all');
+      if (response.ok) {
+        const data = await response.json();
+        setExistingSubjects(data);
+      }
+    } catch (error) {
+      console.error('Error fetching subjects:', error);
+    }
+  };
+
+  const handleModeChange = (newMode) => {
+    setMode(newMode);
+    // Reset fields when switching modes
+    if (newMode === 'existing') {
+      setSubjectName('');
+      setRawToc('');
+      setNormalizedToc('');
+      setNormalizedJson(null);
+    } else {
+      setSelectedSubjectId('');
+    }
+  };
 
   const handleFileChange = (e) => {
     const files = Array.from(e.target.files);
@@ -177,60 +213,77 @@ const IngestDocument = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!subjectName.trim() || !normalizedToc.trim() || selectedFiles.length === 0) {
-      alert('Please fill all fields, process TOC, and upload at least one document');
-      return;
+    // Validation based on mode
+    if (mode === 'new') {
+      if (!subjectName.trim() || !normalizedToc.trim() || selectedFiles.length === 0) {
+        alert('Please fill all fields, process TOC, and upload at least one document');
+        return;
+      }
+    } else {
+      // Existing subject mode
+      if (!selectedSubjectId || selectedFiles.length === 0) {
+        alert('Please select a subject and upload at least one document');
+        return;
+      }
     }
 
     setIsSubmitting(true);
 
     try {
-      // Step 1: Parse normalized TOC
-      console.log('Step 1: Parsing TOC...');
-      const tocResponse = await fetch('http://localhost:8001/structure/normalize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ raw_text: normalizedToc, subject_hint: subjectName })
-      });
-      if (!tocResponse.ok) throw new Error('Failed to parse TOC');
-      const tocData = await tocResponse.json();
-
-      // Step 2: Create subject
-      console.log('Step 2: Creating subject...');
       let subjectId;
-      const subjectResponse = await fetch('http://localhost:8001/subjects/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: tocData.subject, description: 'Auto-created' })
-      });
 
-      if (!subjectResponse.ok) {
-        const existingSubjects = await fetch('http://localhost:8001/subjects/').then(r => r.json());
-        const existing = existingSubjects.find(s => s.name === tocData.subject);
-        if (!existing) throw new Error('Failed to create subject');
-        subjectId = existing.id;
-      } else {
-        subjectId = (await subjectResponse.json()).id;
-      }
-
-      // Step 3: Create units and concepts
-      console.log('Step 3: Creating structure...');
-      for (const unit of tocData.units) {
-        const unitResp = await fetch('http://localhost:8001/units/', {
+      if (mode === 'new') {
+        // Original flow for new subjects
+        // Step 1: Parse normalized TOC
+        console.log('Step 1: Parsing TOC...');
+        const tocResponse = await fetch('http://localhost:8001/structure/normalize', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: unit.name, subject_id: subjectId, order: tocData.units.indexOf(unit) })
+          body: JSON.stringify({ raw_text: normalizedToc, subject_hint: subjectName })
         });
-        if (!unitResp.ok) continue;
-        const unitData = await unitResp.json();
+        if (!tocResponse.ok) throw new Error('Failed to parse TOC');
+        const tocData = await tocResponse.json();
 
-        for (const conceptName of unit.concepts) {
-          await fetch('http://localhost:8001/concepts/', {
+        // Step 2: Create subject
+        console.log('Step 2: Creating subject...');
+        const subjectResponse = await fetch('http://localhost:8001/subjects/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: tocData.subject, description: 'Auto-created' })
+        });
+
+        if (!subjectResponse.ok) {
+          const existingSubjects = await fetch('http://localhost:8001/subjects/').then(r => r.json());
+          const existing = existingSubjects.find(s => s.name === tocData.subject);
+          if (!existing) throw new Error('Failed to create subject');
+          subjectId = existing.id;
+        } else {
+          subjectId = (await subjectResponse.json()).id;
+        }
+
+        // Step 3: Create units and concepts
+        console.log('Step 3: Creating structure...');
+        for (const unit of tocData.units) {
+          const unitResp = await fetch('http://localhost:8001/units/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: conceptName, unit_id: unitData.id, order: unit.concepts.indexOf(conceptName) })
+            body: JSON.stringify({ name: unit.name, subject_id: subjectId, order: tocData.units.indexOf(unit) })
           });
+          if (!unitResp.ok) continue;
+          const unitData = await unitResp.json();
+
+          for (const conceptName of unit.concepts) {
+            await fetch('http://localhost:8001/concepts/', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: conceptName, unit_id: unitData.id, order: unit.concepts.indexOf(conceptName) })
+            });
+          }
         }
+      } else {
+        // Existing subject mode - use selected subject ID
+        subjectId = parseInt(selectedSubjectId);
+        console.log(`Using existing subject ID: ${subjectId}`);
       }
 
       // Step 4: Upload and process each document
@@ -268,14 +321,22 @@ const IngestDocument = () => {
         }
       }
 
-      const successMessage = `Complete!\n\nSubject: ${tocData.subject}\nDocuments Uploaded: ${totalDocuments}\nFailed: ${failedDocuments}\n\nDocuments are now indexed and searchable!`;
+      const selectedSubject = mode === 'existing' 
+        ? existingSubjects.find(s => s.id === parseInt(selectedSubjectId))
+        : { name: subjectName };
+
+      const successMessage = `Complete!\n\nSubject: ${selectedSubject?.name || 'Unknown'}\nDocuments Uploaded: ${totalDocuments}\nFailed: ${failedDocuments}\n\nDocuments are now indexed and searchable!`;
       alert(successMessage);
 
-      // Navigate to subjects list or stay on page
-      setSubjectName('');
-      setRawToc('');
-      setNormalizedToc('');
-      setNormalizedJson(null);
+      // Reset form
+      if (mode === 'new') {
+        setSubjectName('');
+        setRawToc('');
+        setNormalizedToc('');
+        setNormalizedJson(null);
+      } else {
+        setSelectedSubjectId('');
+      }
       setSelectedFiles([]);
     } catch (error) {
       console.error('Error:', error);
@@ -299,59 +360,106 @@ const IngestDocument = () => {
 
         <div className="ingest-content">
           <form onSubmit={handleSubmit} className="ingest-form">
+            
+            {/* Mode Selection */}
             <div className="form-group">
-              <label className="form-label">Subject Name</label>
-              <input
-                type="text"
-                value={subjectName}
-                onChange={(e) => setSubjectName(e.target.value)}
-                placeholder="e.g., Human Computer Interaction"
-                className="form-input"
-                required
-              />
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Table of Contents (Raw)</label>
-              <textarea
-                value={rawToc}
-                onChange={(e) => setRawToc(e.target.value)}
-                placeholder="Paste your syllabus/TOC here..."
-                className="form-textarea"
-                rows="8"
-                required
-              />
-              <button
-                type="button"
-                onClick={handleProcessToc}
-                disabled={isProcessingToc || !rawToc.trim()}
-                className="process-btn"
-              >
-                {isProcessingToc ? (
-                  <>
-                    <div className="spinner"></div>
-                    Processing...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles size={18} />
-                    Process TOC
-                  </>
-                )}
-              </button>
-            </div>
-
-            {normalizedToc && (
-              <div className="form-group">
-                <label className="form-label">Processed TOC (Editable)</label>
-                <textarea
-                  value={normalizedToc}
-                  onChange={(e) => setNormalizedToc(e.target.value)}
-                  className="form-textarea normalized"
-                  rows="10"
-                />
-                <p className="form-hint">✓ TOC processed! You can edit if needed.</p>
+              <label className="form-label">Select Mode</label>
+              <div className="mode-selector">
+                <button
+                  type="button"
+                  className={`mode-btn ${mode === 'new' ? 'active' : ''}`}
+                  onClick={() => handleModeChange('new')}
+                >
+                  New Subject
+                </button>
+                <button
+                  type="button"
+                  className={`mode-btn ${mode === 'existing' ? 'active' : ''}`}
+                  onClick={() => handleModeChange('existing')}
+                >
+                  Existing Subject
+                </button>
               </div>
+            </div>
+
+            {/* Existing Subject Selection */}
+            {mode === 'existing' && (
+              <div className="form-group">
+                <label className="form-label">Select Subject</label>
+                <select
+                  value={selectedSubjectId}
+                  onChange={(e) => setSelectedSubjectId(e.target.value)}
+                  className="form-input"
+                  required
+                >
+                  <option value="">-- Choose a subject --</option>
+                  {existingSubjects.map(subject => (
+                    <option key={subject.id} value={subject.id}>
+                      {subject.name} ({subject.unit_count} units, {subject.document_count} docs)
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* New Subject Fields */}
+            {mode === 'new' && (
+              <>
+                <div className="form-group">
+                  <label className="form-label">Subject Name</label>
+                  <input
+                    type="text"
+                    value={subjectName}
+                    onChange={(e) => setSubjectName(e.target.value)}
+                    placeholder="e.g., Human Computer Interaction"
+                    className="form-input"
+                    required
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Table of Contents (Raw)</label>
+                  <textarea
+                    value={rawToc}
+                    onChange={(e) => setRawToc(e.target.value)}
+                    placeholder="Paste your syllabus/TOC here..."
+                    className="form-textarea"
+                    rows="8"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={handleProcessToc}
+                    disabled={isProcessingToc || !rawToc.trim()}
+                    className="process-btn"
+                  >
+                    {isProcessingToc ? (
+                      <>
+                        <div className="spinner"></div>
+                        Processing...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles size={18} />
+                        Process TOC
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {normalizedToc && (
+                  <div className="form-group">
+                    <label className="form-label">Processed TOC (Editable)</label>
+                    <textarea
+                      value={normalizedToc}
+                      onChange={(e) => setNormalizedToc(e.target.value)}
+                      className="form-textarea normalized"
+                      rows="10"
+                    />
+                    <p className="form-hint">✓ TOC processed! You can edit if needed.</p>
+                  </div>
+                )}
+              </>
             )}
 
             <div className="form-group">
@@ -413,29 +521,31 @@ const IngestDocument = () => {
         </div>
 
         <div className="ingest-actions">
-          <button
-            type="button"
-            className="save-index-btn"
-            onClick={handleSaveIndex}
-            disabled={isSavingIndex || !normalizedToc}
-          >
-            {isSavingIndex ? (
-              <>
-                <div className="spinner"></div>
-                Saving...
-              </>
-            ) : (
-              <>
-                <FileText size={18} />
-                Save Index
-              </>
-            )}
-          </button>
+          {mode === 'new' && (
+            <button
+              type="button"
+              className="save-index-btn"
+              onClick={handleSaveIndex}
+              disabled={isSavingIndex || !normalizedToc}
+            >
+              {isSavingIndex ? (
+                <>
+                  <div className="spinner"></div>
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <FileText size={18} />
+                  Save Index
+                </>
+              )}
+            </button>
+          )}
           <button
             type="submit"
             className="submit-btn"
             onClick={handleSubmit}
-            disabled={isSubmitting || !normalizedToc}
+            disabled={isSubmitting || (mode === 'new' && !normalizedToc) || (mode === 'existing' && !selectedSubjectId)}
           >
             {isSubmitting ? (
               <>
@@ -445,7 +555,7 @@ const IngestDocument = () => {
             ) : (
               <>
                 <Send size={18} />
-                Process Document
+                {mode === 'existing' ? 'Upload Documents' : 'Process Document'}
               </>
             )}
           </button>
