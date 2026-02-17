@@ -15,7 +15,10 @@ import {
   Book,
   FileInput,
   ClipboardList,
-  LogOut
+  LogOut,
+  BookOpen,
+  Upload,
+  Database
 } from 'lucide-react';
 import './Sidebar.css';
 
@@ -67,10 +70,14 @@ const Sidebar = () => {
       ]
     },
     {
-      key: 'ingest',
-      icon: <FileInput size={20} />,
-      text: 'Ingest Document',
-      path: '/ingest'
+      key: 'subjects',
+      icon: <BookOpen size={20} />,
+      text: 'Subjects',
+      submenu: [
+        { icon: <List size={18} />, text: 'All Subjects', path: '/subjects' },
+        { icon: <Upload size={18} />, text: 'Ingest Document', path: '/ingest' },
+        { icon: <Database size={18} />, text: 'View Embeddings', path: '/vectors' }
+      ]
     },
     {
       key: 'users',

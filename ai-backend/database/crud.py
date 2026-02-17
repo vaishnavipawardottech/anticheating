@@ -69,11 +69,27 @@ def update_subject(db: Session, subject_id: int, subject_update: schemas.Subject
 
 
 def delete_subject(db: Session, subject_id: int) -> bool:
-    """Delete a subject (cascades to units and concepts)"""
+    """Delete a subject and all related data: exams, documents (chunks, elements), units, concepts."""
     db_subject = get_subject(db, subject_id)
     if not db_subject:
         return False
-    
+
+    # Get IDs without loading Document/Exam entities to avoid StaleDataError on commit
+    doc_ids = [r[0] for r in db.query(models.Document.id).filter(models.Document.subject_id == subject_id).all()]
+    exam_ids = [r[0] for r in db.query(models.Exam.id).filter(models.Exam.subject_id == subject_id).all()]
+
+    from database.models import QuestionSource, Question, DocumentChunk, ParsedElement
+
+    if exam_ids:
+        q_sub = db.query(models.Question.id).filter(models.Question.exam_id.in_(exam_ids))
+        db.query(QuestionSource).filter(QuestionSource.question_id.in_(q_sub)).delete(synchronize_session=False)
+        db.query(models.Question).filter(models.Question.exam_id.in_(exam_ids)).delete(synchronize_session=False)
+    db.query(models.Exam).filter(models.Exam.subject_id == subject_id).delete(synchronize_session=False)
+
+    if doc_ids:
+        db.query(DocumentChunk).filter(DocumentChunk.document_id.in_(doc_ids)).delete(synchronize_session=False)
+        db.query(ParsedElement).filter(ParsedElement.document_id.in_(doc_ids)).delete(synchronize_session=False)
+    db.query(models.Document).filter(models.Document.subject_id == subject_id).delete(synchronize_session=False)
     db.delete(db_subject)
     db.commit()
     return True

@@ -152,6 +152,24 @@ class DocumentCleanup:
             return False  # Images/tables with no text are legitimate
         
         return len(element.text.strip()) == 0
+
+    @staticmethod
+    def is_symbol_or_bullet_only(text: str) -> bool:
+        """
+        Detect elements that are only bullets, boxes, or decorative symbols (no real content).
+        Removes noise like "□ □", "■", "•" so they are not embedded or chunked.
+        """
+        if not text or not text.strip():
+            return True
+        s = text.strip()
+        if len(s) <= 1:
+            return True
+        stripped = re.sub(r"[\s\u25A0\u25A1\u25C6\u2022\u00B7\-_*■□•·]+", "", s)
+        if not stripped or len(stripped) < 2:
+            return True
+        if len(s.split()) <= 2 and not re.search(r"[a-zA-Z]{2,}", s):
+            return True
+        return False
     
     @staticmethod
     def has_cid_artifact(text: str) -> bool:
@@ -212,6 +230,11 @@ class DocumentCleanup:
             # Filter 5: Pure numeric
             if DocumentCleanup.is_pure_numeric(element.text):
                 stats.add_removal("pure_numeric")
+                continue
+            
+            # Filter 5b: Symbol/bullet only (□ ■ • etc.)
+            if DocumentCleanup.is_symbol_or_bullet_only(element.text):
+                stats.add_removal("symbol_bullet_only")
                 continue
             
             # Filter 6: CID artifacts (remove from text, keep element)

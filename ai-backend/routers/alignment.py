@@ -10,9 +10,11 @@ from typing import List, Optional
 import json
 
 from database.database import get_db
-from database.models import Concept, Unit, AlignedElement
+from database.models import Concept, Unit, AlignedElement, ParsedElement, DocumentChunk, Document
 from parsing.schemas import SemanticElement
 from routers.structure_ai import call_gemini_flash
+from embeddings.qdrant_manager import get_qdrant_manager
+from qdrant_client.models import PointStruct
 
 router = APIRouter(prefix="/alignment", tags=["alignment"])
 
@@ -200,4 +202,132 @@ async def align_elements(request: AlignmentRequest, db: Session = Depends(get_db
         aligned=aligned_count,
         unassigned=unassigned_count,
         results=results
+    )
+
+
+class AlignDocumentRequest(BaseModel):
+    """Align DB-stored rows by document or chunks; persists to ParsedElement or DocumentChunk."""
+    document_id: Optional[int] = Field(None, description="Align all elements of this document")
+    chunk_ids: Optional[List[int]] = Field(None, description="Align these chunk IDs (DocumentChunk)")
+
+
+@router.post("/align-document", response_model=AlignmentResponse)
+async def align_document(request: AlignDocumentRequest, db: Session = Depends(get_db)):
+    """
+    Align document elements or chunks stored in DB and persist concept_id + alignment_confidence.
+    Provide document_id to align ParsedElements, or chunk_ids to align DocumentChunks.
+    """
+    if not request.document_id and not request.chunk_ids:
+        raise HTTPException(status_code=400, detail="Provide document_id or chunk_ids")
+    all_results = []
+    subject_id = None
+    if request.document_id:
+        doc = db.query(Document).filter(Document.id == request.document_id).first()
+        if not doc:
+            raise HTTPException(status_code=404, detail=f"Document {request.document_id} not found")
+        subject_id = doc.subject_id
+        elements_db = (
+            db.query(ParsedElement)
+            .filter(ParsedElement.document_id == request.document_id)
+            .order_by(ParsedElement.order_index)
+            .all()
+        )
+        # Build SemanticElement-like list (order, element_type, text)
+        elements_for_align = [
+            SemanticElement(
+                order=e.order_index,
+                element_type=e.element_type,
+                text=e.text,
+                page_number=e.page_number,
+                source_filename=doc.filename or "",
+                metadata={},
+            )
+            for e in elements_db
+        ]
+        if not elements_for_align:
+            return AlignmentResponse(total_elements=0, aligned=0, unassigned=0, results=[])
+        concepts = db.query(Concept).join(Unit).filter(Unit.subject_id == subject_id).all()
+        if not concepts:
+            raise HTTPException(status_code=404, detail=f"No concepts for subject_id={subject_id}")
+        batch_results = await align_batch(elements_for_align, concepts)
+        order_to_result = {r["order"]: r for r in batch_results}
+        for e in elements_db:
+            res = order_to_result.get(e.order_index, {})
+            e.concept_id = res.get("concept_id")
+            e.alignment_confidence = res.get("confidence")
+        db.commit()
+        all_results = batch_results
+    if request.chunk_ids:
+        chunks = db.query(DocumentChunk).filter(DocumentChunk.id.in_(request.chunk_ids)).all()
+        if not chunks:
+            raise HTTPException(status_code=404, detail="No chunks found for given chunk_ids")
+        doc_id = chunks[0].document_id
+        subject_id = db.query(Document).filter(Document.id == doc_id).first().subject_id
+        # Use chunk_index as order, chunk text as content
+        elements_for_align = [
+            SemanticElement(
+                order=c.chunk_index,
+                element_type="CHUNK",
+                text=c.text,
+                page_number=c.page_start,
+                source_filename="",
+                metadata={},
+            )
+            for c in chunks
+        ]
+        concepts = db.query(Concept).join(Unit).filter(Unit.subject_id == subject_id).all()
+        if not concepts:
+            raise HTTPException(status_code=404, detail=f"No concepts for subject_id={subject_id}")
+        batch_results = await align_batch(elements_for_align, concepts)
+        chunk_index_to_result = {r["order"]: r for r in batch_results}
+        for c in chunks:
+            res = chunk_index_to_result.get(c.chunk_index, {})
+            c.concept_id = res.get("concept_id")
+            c.alignment_confidence = res.get("confidence")
+        db.commit()
+        # Update Qdrant payload so concept_id filter works
+        try:
+            qdrant = get_qdrant_manager()
+            for c in chunks:
+                if c.embedding_vector and c.vector_id:
+                    payload = {
+                        "subject_id": db.query(Document).filter(Document.id == c.document_id).first().subject_id,
+                        "document_id": c.document_id,
+                        "unit_id": c.unit_id,
+                        "concept_id": c.concept_id,
+                        "section_path": c.section_path or "",
+                        "page_start": c.page_start or 0,
+                        "page_end": c.page_end or 0,
+                        "point_type": "chunk",
+                        "chunk_id": c.id,
+                    }
+                    qdrant.client.upsert(
+                        collection_name=qdrant.COLLECTION_NAME,
+                        points=[
+                            PointStruct(
+                                id=c.id + qdrant.CHUNK_ID_OFFSET,
+                                vector=c.embedding_vector,
+                                payload=payload,
+                            )
+                        ],
+                    )
+        except Exception as e:
+            print(f"⚠ Qdrant payload update for chunks failed: {str(e)}")
+        all_results = batch_results if not all_results else all_results + batch_results
+    aligned_count = sum(1 for r in all_results if r.get("concept_id") is not None)
+    unassigned_count = len(all_results) - aligned_count
+    results = [
+        AlignmentResult(
+            element_order=r["order"],
+            concept_id=r.get("concept_id"),
+            status="ALIGNED" if r.get("concept_id") else "UNASSIGNED",
+            confidence=r.get("confidence"),
+        )
+        for r in all_results
+    ]
+    return AlignmentResponse(
+        total_elements=len(all_results),
+        aligned=aligned_count,
+        unassigned=unassigned_count,
+        results=results,
     )

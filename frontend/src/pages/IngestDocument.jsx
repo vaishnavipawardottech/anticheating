@@ -9,16 +9,23 @@ const IngestDocument = () => {
   const [rawToc, setRawToc] = useState('');
   const [normalizedToc, setNormalizedToc] = useState('');
   const [normalizedJson, setNormalizedJson] = useState(null); // Store the JSON structure
-  const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedFiles, setSelectedFiles] = useState([]); // Changed to array for multiple files
   const [isProcessingToc, setIsProcessingToc] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSavingIndex, setIsSavingIndex] = useState(false);
 
   const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      setSelectedFile(file);
+    const files = Array.from(e.target.files);
+    if (files.length > 0) {
+      // Add new files to existing ones
+      setSelectedFiles(prev => [...prev, ...files]);
     }
+    // Reset input to allow selecting the same file again
+    e.target.value = '';
+  };
+
+  const handleRemoveFile = (indexToRemove) => {
+    setSelectedFiles(prev => prev.filter((_, index) => index !== indexToRemove));
   };
 
   const handleProcessToc = async () => {
@@ -170,8 +177,8 @@ const IngestDocument = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!subjectName.trim() || !normalizedToc.trim() || !selectedFile) {
-      alert('Please fill all fields, process TOC, and upload a document');
+    if (!subjectName.trim() || !normalizedToc.trim() || selectedFiles.length === 0) {
+      alert('Please fill all fields, process TOC, and upload at least one document');
       return;
     }
 
@@ -226,30 +233,50 @@ const IngestDocument = () => {
         }
       }
 
-      // Step 4: Parse document
-      console.log('Step 4: Parsing document...');
-      const formData = new FormData();
-      formData.append('file', selectedFile);
-      const parseResp = await fetch('http://localhost:8001/documents/parse-and-cleanup', { method: 'POST', body: formData });
-      if (!parseResp.ok) throw new Error('Failed to parse document');
-      const parseData = await parseResp.json();
+      // Step 4: Upload and process each document
+      let totalDocuments = 0;
+      let failedDocuments = 0;
 
-      // Step 5: Align elements
-      console.log('Step 5: Aligning elements...');
-      const alignResp = await fetch('http://localhost:8001/alignment/align', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subject_id: subjectId, elements: parseData.elements })
-      });
-      if (!alignResp.ok) throw new Error('Failed to align');
-      const alignData = await alignResp.json();
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const file = selectedFiles[i];
+        console.log(`Step 4 (${i + 1}/${selectedFiles.length}): Uploading and processing ${file.name}...`);
+        
+        try {
+          const formData = new FormData();
+          formData.append('file', file);
+          formData.append('subject_id', subjectId);
+          
+          const uploadResp = await fetch('http://localhost:8001/documents/upload-and-store', { 
+            method: 'POST', 
+            body: formData 
+          });
+          
+          if (!uploadResp.ok) {
+            const errorData = await uploadResp.json();
+            console.error(`Failed to upload ${file.name}:`, errorData);
+            failedDocuments++;
+            continue;
+          }
+          
+          const documentData = await uploadResp.json();
+          console.log(`✓ Uploaded ${file.name} - Document ID: ${documentData.id}, Status: ${documentData.status}`);
+          totalDocuments++;
+          
+        } catch (error) {
+          console.error(`Error processing ${file.name}:`, error);
+          failedDocuments++;
+        }
+      }
 
-      alert(`Complete!\n\nSubject: ${tocData.subject}\nElements: ${parseData.total_elements}\nAligned: ${alignData.aligned}\nUnassigned: ${alignData.unassigned}`);
+      const successMessage = `Complete!\n\nSubject: ${tocData.subject}\nDocuments Uploaded: ${totalDocuments}\nFailed: ${failedDocuments}\n\nDocuments are now indexed and searchable!`;
+      alert(successMessage);
 
+      // Navigate to subjects list or stay on page
       setSubjectName('');
       setRawToc('');
       setNormalizedToc('');
-      setSelectedFile(null);
+      setNormalizedJson(null);
+      setSelectedFiles([]);
     } catch (error) {
       console.error('Error:', error);
       alert(`Failed: ${error.message}`);
@@ -328,7 +355,7 @@ const IngestDocument = () => {
             )}
 
             <div className="form-group">
-              <label className="form-label">Upload Document</label>
+              <label className="form-label">Upload Documents</label>
               <div className="file-upload-area">
                 <input
                   type="file"
@@ -336,26 +363,51 @@ const IngestDocument = () => {
                   onChange={handleFileChange}
                   accept=".pdf,.pptx,.docx"
                   className="file-input"
-                  required
+                  multiple
                 />
                 <label htmlFor="file-upload" className="file-upload-label">
-                  {selectedFile ? (
+                  {selectedFiles.length > 0 ? (
                     <div className="file-selected">
-                      <FileText size={24} />
-                      <span>{selectedFile.name}</span>
-                      <span className="file-size">
-                        ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)
-                      </span>
+                      <Upload size={24} />
+                      <span>Click to add more files</span>
+                      <span className="file-hint">PDF, PPTX, or DOCX (max 50MB each)</span>
                     </div>
                   ) : (
                     <div className="file-placeholder">
                       <Upload size={32} />
                       <span>Click to upload or drag and drop</span>
-                      <span className="file-hint">PDF, PPTX, or DOCX (max 50MB)</span>
+                      <span className="file-hint">PDF, PPTX, or DOCX (max 50MB each)</span>
                     </div>
                   )}
                 </label>
               </div>
+              
+              {selectedFiles.length > 0 && (
+                <div className="selected-files-list">
+                  <p className="files-count">{selectedFiles.length} file(s) selected</p>
+                  {selectedFiles.map((file, index) => (
+                    <div key={index} className="file-item">
+                      <div className="file-info">
+                        <FileText size={20} />
+                        <div className="file-details">
+                          <span className="file-name">{file.name}</span>
+                          <span className="file-size">
+                            {(file.size / 1024 / 1024).toFixed(2)} MB
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveFile(index)}
+                        className="remove-file-btn"
+                        title="Remove file"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </form>
         </div>

@@ -76,9 +76,10 @@ def backfill_qdrant(dry_run=False, batch_size=100):
             print(f"\nTotal: {total_elements} elements would be indexed")
             return
         
-        # Initialize Qdrant
+        # Initialize Qdrant and ensure collection exists
         print("\nConnecting to Qdrant...")
         qdrant = get_qdrant_manager()
+        qdrant.create_collection()
         print("✓ Connected to Qdrant")
         
         # Process in batches

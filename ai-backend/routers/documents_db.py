@@ -8,16 +8,16 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, status, Depends, Form
+from fastapi import APIRouter, UploadFile, File, HTTPException, status, Depends, Form, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 
 from parsing.document_parser import DocumentParser
 from parsing.cleanup import cleanup_elements
 from parsing.classifier import ElementClassifier
+from parsing.chunker import chunk_elements, compute_section_paths_for_elements, table_to_row_chunks
 from database.database import get_db
-from database.models import Document, ParsedElement
+from database.models import Document, ParsedElement, DocumentChunk
 from database.schemas import DocumentResponse, ParsedElementResponse
 from embeddings import get_embedding_generator
 from embeddings.qdrant_manager import get_qdrant_manager
@@ -25,9 +25,22 @@ from datetime import datetime
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
+
+def _parse_optional_document_id(document_id: Optional[str] = Query(None)) -> Optional[int]:
+    """Parse document_id query param; treat missing or empty string as None to avoid 422."""
+    if not document_id or not str(document_id).strip():
+        return None
+    try:
+        return int(document_id)
+    except ValueError:
+        return None
+
+
 # Configuration
 MAX_UPLOAD_SIZE = int(os.getenv("MAX_UPLOAD_SIZE", 52428800))  # 50MB
 ALLOWED_EXTENSIONS = {"pdf", "pptx", "docx"}
+# DB may have section_path as VARCHAR(500); truncate so insert never fails. Run migrations/alter_section_path_to_text.py for TEXT.
+MAX_SECTION_PATH_LEN = 500
 
 
 def validate_file(file: UploadFile) -> tuple[str, str]:
@@ -197,58 +210,62 @@ async def upload_and_store_document(
         
         print(f"   Cleanup: {cleanup_stats.removed_elements} removed, {cleanup_stats.kept_elements} kept")
         
-        # 6. Classify elements (compute categories for database storage)
-        print(f"   Classifying {len(cleaned_elements)} elements...")
+        # 6. Classify elements
         classifier = ElementClassifier()
-        
-        # Create a map of element index to classification results
-        classification_map = {}
-        for idx, element in enumerate(cleaned_elements):
-            category = classifier.classify(element)
-            is_diagram_critical = classifier.is_diagram_critical(element)
-            classification_map[idx] = {
-                'category': category,
-                'is_diagram_critical': is_diagram_critical
-            }
+        for element in cleaned_elements:
+            element.category = classifier.classify(element)
+            element.is_diagram_critical = classifier.is_diagram_critical(element)
         
         # Count by category
         category_counts = {}
-        for classification in classification_map.values():
-            cat = classification['category']
+        for element in cleaned_elements:
+            cat = getattr(element, 'category', 'OTHER')
             category_counts[cat] = category_counts.get(cat, 0) + 1
         
         print(f"   Classification: {category_counts}")
+        
+        # 6b. Section paths for every element (heading stack -> section_path per index)
+        section_paths = compute_section_paths_for_elements(cleaned_elements)
+
+        # 6c. Section-aware + semantic chunking (break at topic boundaries when over size)
+        try:
+            emb_gen = get_embedding_generator()
+            embed_fn = emb_gen.generate_embeddings_batch
+        except Exception:
+            embed_fn = None
+        doc_chunks = chunk_elements(cleaned_elements, embed_fn=embed_fn)
+        for idx, element in enumerate(cleaned_elements):
+            if getattr(element, "category", "OTHER") == "TABLE" and element.text:
+                path = section_paths[idx] if idx < len(section_paths) else ""
+                page = getattr(element, "page_number", None) or 1
+                doc_chunks.extend(table_to_row_chunks(element.text, path, page, idx))
+        doc_chunks.sort(key=lambda c: (c.page_start or 0, c.source_element_orders[0] if c.source_element_orders else 0))
+        print(f"   Chunking: {len(doc_chunks)} chunks (text + table rows) from {len(cleaned_elements)} elements")
         
         # 7. Generate embeddings for TEXT elements
         document.status = "embedding"
         db.commit()
         
-        # Filter TEXT elements that have content
-        text_elements_indices = [
-            idx for idx, classification in classification_map.items()
-            if classification['category'] == 'TEXT' 
-            and cleaned_elements[idx].text 
-            and cleaned_elements[idx].text.strip()
+        # Build (index, text) list for TEXT elements in one pass (avoid O(n²) and wrong index for duplicates)
+        text_indices_and_texts = [
+            (idx, elem.text)
+            for idx, elem in enumerate(cleaned_elements)
+            if getattr(elem, 'category', 'OTHER') == 'TEXT' and elem.text and elem.text.strip()
         ]
         
         embeddings_map = {}  # Map element index to embedding
         
-        if text_elements_indices:
-            print(f"   Generating embeddings for {len(text_elements_indices)} TEXT elements...")
+        if text_indices_and_texts:
+            indices = [t[0] for t in text_indices_and_texts]
+            texts = [t[1] for t in text_indices_and_texts]
+            print(f"   Generating embeddings for {len(texts)} TEXT elements...")
             
             try:
-                # Get embedding generator
                 embedding_gen = get_embedding_generator()
-                
-                # Extract texts for batch processing
-                texts = [cleaned_elements[idx].text for idx in text_elements_indices]
-                
-                # Generate embeddings in batch (efficient)
                 embeddings = embedding_gen.generate_embeddings_batch(texts, batch_size=32)
                 
-                # Map embeddings back to element indices
-                for idx, embedding in zip(text_elements_indices, embeddings):
-                    embeddings_map[idx] = embedding
+                for stored_idx, embedding in zip(indices, embeddings):
+                    embeddings_map[stored_idx] = embedding
                 
                 print(f"   ✓ Generated {len(embeddings)} embeddings (384-dim each)")
                 
@@ -258,18 +275,21 @@ async def upload_and_store_document(
         else:
             print(f"   No TEXT elements to embed")
         
-        # 8. Save elements to database
+        # 8. Save elements to database (with section_path per element)
         for idx, element in enumerate(cleaned_elements):
-            classification = classification_map[idx]
+            sp = section_paths[idx] if idx < len(section_paths) else None
+            if sp and len(sp) > MAX_SECTION_PATH_LEN:
+                sp = sp[: MAX_SECTION_PATH_LEN - 3] + "..."
             db_element = ParsedElement(
                 document_id=document.id,
                 order_index=idx,
                 element_type=element.element_type,
-                category=classification['category'],
+                category=getattr(element, 'category', 'OTHER'),
                 text=element.text,
                 page_number=element.page_number,
+                section_path=sp or None,
                 element_metadata=element.metadata,
-                is_diagram_critical=classification['is_diagram_critical'],
+                is_diagram_critical=getattr(element, 'is_diagram_critical', False),
                 confidence_score=None,
                 embedding_vector=embeddings_map.get(idx)  # Add embedding if available
             )
@@ -279,7 +299,7 @@ async def upload_and_store_document(
         print(f"   Saved {len(cleaned_elements)} elements to database")
         if embeddings_map:
             print(f"   ({len(embeddings_map)} elements with embeddings)")
-
+        
         # 9. Index embeddings to Qdrant
         if embeddings_map:
             document.status = "indexing"
@@ -287,6 +307,7 @@ async def upload_and_store_document(
             
             try:
                 qdrant = get_qdrant_manager()
+                qdrant.create_collection()  # ensure collection exists before indexing
                 
                 # Get saved elements with embeddings
                 saved_elements = db.query(ParsedElement)\
@@ -295,55 +316,136 @@ async def upload_and_store_document(
                     .order_by(ParsedElement.order_index)\
                     .all()
                 
-                if saved_elements:
-                    # Prepare batch data for Qdrant
-                    element_ids = []
-                    embeddings_list = []
-                    metadatas = []
-                    
-                    for elem in saved_elements:
-                        element_ids.append(elem.id)
-                        embeddings_list.append(elem.embedding_vector)
-                        metadatas.append({
-                            "document_id": document.id,
-                            "subject_id": subject_id,
-                            "category": elem.category,
-                            "page_number": elem.page_number or 0,
-                            "element_type": elem.element_type
-                        })
-                    
-                    print(f"   Indexing {len(saved_elements)} vectors to Qdrant...")
-                    
-                    # Batch index to Qdrant
-                    vector_ids = qdrant.index_elements_batch(
-                        element_ids, embeddings_list, metadatas
-                    )
-                    
-                    # Update database with vector_ids and indexed_at
-                    for elem_id, vector_id in zip(element_ids, vector_ids):
-                        elem = db.query(ParsedElement).filter(ParsedElement.id == elem_id).first()
-                        if elem:
-                            elem.vector_id = str(vector_id)
-                            elem.indexed_at = func.now()
-                    
-                    db.commit()
-                    print(f"   ✓ Indexed {len(vector_ids)} vectors to Qdrant")
+                # Prepare batch data for Qdrant
+                element_ids = []
+                embeddings_list = []
+                metadatas = []
                 
-                # Mark document as indexed
-                document.status = "indexed"
-                document.indexed_at = func.now()
+                for elem in saved_elements:
+                    ev = elem.embedding_vector
+                    if ev is None or not isinstance(ev, list) or len(ev) != 384:
+                        continue
+                    element_ids.append(elem.id)
+                    embeddings_list.append(ev)
+                    metadatas.append({
+                        "document_id": document.id,
+                        "subject_id": subject_id,
+                        "category": elem.category,
+                        "page_number": elem.page_number or 0,
+                        "element_type": elem.element_type
+                    })
+                
+                # Batch index to Qdrant
+                vector_ids = qdrant.index_elements_batch(
+                    element_ids, embeddings_list, metadatas
+                )
+                
+                # Update database with vector_ids and indexed_at
+                emb_model = get_embedding_generator()
+                model_name = emb_model.model_name
+                dim = emb_model.EMBEDDING_DIM
+                now = datetime.now()
+                for elem_id, vector_id in zip(element_ids, vector_ids):
+                    elem = db.query(ParsedElement).get(elem_id)
+                    elem.vector_id = vector_id
+                    elem.indexed_at = now
+                    elem.embedding_model = model_name
+                    elem.embedding_dim = dim
+                    elem.embedded_at = now
+                
                 db.commit()
+                print(f"   ✓ Indexed {len(vector_ids)} vectors to Qdrant")
                 
             except Exception as e:
                 print(f"   ⚠ Qdrant indexing failed: {str(e)}")
                 print(f"   Continuing without vector indexing (embeddings saved in DB)...")
-                # Still mark as indexed even if Qdrant fails
-                document.status = "indexed"
-                db.commit()
-        else:
-            # No embeddings generated, still mark as complete
-            document.status = "indexed"
+        
+        # 9b. Save and index chunks (section-aware retrieval)
+        if doc_chunks:
+            for chunk_index, cinfo in enumerate(doc_chunks):
+                # section_path can be very long in slide decks; truncate so VARCHAR(500) never exceeded
+                sp = (cinfo.section_path or "").strip() or None
+                if sp and len(sp) > MAX_SECTION_PATH_LEN:
+                    sp = sp[: MAX_SECTION_PATH_LEN - 3] + "..."
+                token_count = int(len((cinfo.text or "").split()) * 1.3)
+                db_chunk = DocumentChunk(
+                    document_id=document.id,
+                    chunk_index=chunk_index,
+                    text=cinfo.text,
+                    section_path=sp,
+                    page_start=cinfo.page_start,
+                    page_end=cinfo.page_end,
+                    source_element_orders=cinfo.source_element_orders,
+                    token_count=token_count,
+                    chunk_type=getattr(cinfo, "chunk_type", "text"),
+                    table_id=getattr(cinfo, "table_id", None),
+                    row_id=getattr(cinfo, "row_id", None),
+                    unit_id=None,
+                    concept_id=None,
+                )
+                db.add(db_chunk)
             db.commit()
+            # Get chunk IDs and generate chunk embeddings
+            saved_chunks = db.query(DocumentChunk).filter(
+                DocumentChunk.document_id == document.id
+            ).order_by(DocumentChunk.chunk_index).all()
+            chunk_texts = [c.text for c in saved_chunks]
+            try:
+                embedding_gen = get_embedding_generator()
+                chunk_embeddings = embedding_gen.generate_embeddings_batch(chunk_texts, batch_size=32)
+                chunk_ids = []
+                embeddings_list = []
+                metadatas = []
+                emb_model = get_embedding_generator()
+                model_name = emb_model.model_name
+                dim = emb_model.EMBEDDING_DIM
+                now = datetime.now()
+                for c, emb in zip(saved_chunks, chunk_embeddings):
+                    c.embedding_vector = emb
+                    if emb is None or not isinstance(emb, list) or len(emb) != 384:
+                        continue
+                    chunk_ids.append(c.id)
+                    embeddings_list.append(emb)
+                    sp = (c.section_path or "")[:MAX_SECTION_PATH_LEN]
+                    meta = {
+                        "subject_id": subject_id,
+                        "document_id": document.id,
+                        "unit_id": c.unit_id,
+                        "concept_id": c.concept_id,
+                        "section_path": sp,
+                        "page_start": c.page_start or 0,
+                        "page_end": c.page_end or 0,
+                        "point_type": "chunk",
+                        "chunk_type": getattr(c, "chunk_type", "text") or "text",
+                    }
+                    if getattr(c, "table_id", None) is not None:
+                        meta["table_id"] = c.table_id
+                    if getattr(c, "row_id", None) is not None:
+                        meta["row_id"] = c.row_id
+                    metadatas.append(meta)
+                if chunk_ids:
+                    db.commit()
+                    qdrant = get_qdrant_manager()
+                    qdrant.index_chunks_batch(chunk_ids, embeddings_list, metadatas)
+                    indexed_chunk_ids = set(chunk_ids)
+                    for c in saved_chunks:
+                        if c.id in indexed_chunk_ids:
+                            c.vector_id = f"chunk_{c.id}"
+                            c.indexed_at = now
+                            c.embedding_model = model_name
+                            c.embedding_dim = dim
+                            c.embedded_at = now
+                    db.commit()
+                    print(f"   ✓ Indexed {len(chunk_ids)} chunks to Qdrant")
+                else:
+                    db.commit()  # persist embedding_vector on chunks even when not indexing
+                    print(f"   ⚠ No chunk embeddings to index (skipped)")
+            except Exception as e:
+                print(f"   ⚠ Chunk embedding/indexing failed: {str(e)}")
+        
+        # 10. Update document status
+        document.status = "indexed" if embeddings_map else "parsed"
+        db.commit()
         
         print(f"✓ Document processing complete: {filename}")
         
@@ -357,6 +459,12 @@ async def upload_and_store_document(
         # Rollback database changes
         db.rollback()
         
+        # Log full error traceback
+        import traceback
+        error_traceback = traceback.format_exc()
+        print(f"❌ ERROR during document processing:")
+        print(error_traceback)
+        
         # Keep file for debugging
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -364,7 +472,196 @@ async def upload_and_store_document(
         )
 
 
-@router.get("/documents/{document_id}", response_model=DocumentResponse)
+@router.get("/embedding-status")
+def get_embedding_status(
+    document_id: Optional[int] = Depends(_parse_optional_document_id),
+    db: Session = Depends(get_db),
+):
+    """
+    Summary of embedding status: total/embedded/missing for elements and chunks,
+    optional document filter, and doc-level badges (X/Y embedded + model name).
+    """
+    # Elements
+    elem_base = db.query(ParsedElement).filter(ParsedElement.document_id == document_id) if document_id else db.query(ParsedElement)
+    total_elements = elem_base.count()
+    embedded_elements = elem_base.filter(ParsedElement.vector_id.isnot(None)).count()
+
+    # Chunks
+    chunk_base = db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id) if document_id else db.query(DocumentChunk)
+    total_chunks = chunk_base.count()
+    embedded_chunks = chunk_base.filter(DocumentChunk.vector_id.isnot(None)).count()
+
+    # Model name from first embedded row or generator
+    model_name = None
+    first_emb = db.query(ParsedElement.embedding_model).filter(ParsedElement.embedding_model.isnot(None)).first()
+    if first_emb and first_emb[0]:
+        model_name = first_emb[0]
+    else:
+        first_chunk = db.query(DocumentChunk.embedding_model).filter(DocumentChunk.embedding_model.isnot(None)).first()
+        if first_chunk and first_chunk[0]:
+            model_name = first_chunk[0]
+    if not model_name:
+        try:
+            model_name = get_embedding_generator().model_name
+        except Exception:
+            model_name = "unknown"
+
+    by_document = []
+    docs = db.query(Document).filter(Document.id == document_id).all() if document_id else db.query(Document).all()
+    for doc in docs:
+        e_tot = db.query(ParsedElement).filter(ParsedElement.document_id == doc.id).count()
+        e_emb = db.query(ParsedElement).filter(ParsedElement.document_id == doc.id, ParsedElement.vector_id.isnot(None)).count()
+        c_tot = db.query(DocumentChunk).filter(DocumentChunk.document_id == doc.id).count()
+        c_emb = db.query(DocumentChunk).filter(DocumentChunk.document_id == doc.id, DocumentChunk.vector_id.isnot(None)).count()
+        by_document.append({
+            "document_id": doc.id,
+            "filename": doc.filename,
+            "elements_total": e_tot,
+            "elements_embedded": e_emb,
+            "elements_missing": e_tot - e_emb,
+            "chunks_total": c_tot,
+            "chunks_embedded": c_emb,
+            "chunks_missing": c_tot - c_emb,
+            "badge": f"{c_emb}/{c_tot} chunks" + (" ✅" if c_tot and c_emb == c_tot else ""),
+        })
+
+    return {
+        "embedding_model": model_name,
+        "total_elements": total_elements,
+        "embedded_elements": embedded_elements,
+        "missing_elements": total_elements - embedded_elements,
+        "total_chunks": total_chunks,
+        "embedded_chunks": embedded_chunks,
+        "missing_chunks": total_chunks - embedded_chunks,
+        "by_document": by_document,
+    }
+
+
+@router.get("/elements-with-embeddings")
+def get_elements_with_embeddings(
+    document_id: Optional[int] = Depends(_parse_optional_document_id),
+    limit: int = 100,
+    offset: int = 0,
+    unembedded_only: bool = False,
+    embedded_before: Optional[str] = None,
+    category: Optional[str] = None,
+    element_type: Optional[str] = None,
+    text_mode: str = Query("preview", description="preview (first 200 chars) or full"),
+    db: Session = Depends(get_db),
+):
+    """
+    List parsed elements with optional filters.
+    text_mode: preview (default) or full — full includes full text in each element.
+    unembedded_only: only elements without vector_id.
+    embedded_before: ISO date string (e.g. 2025-01-01) for stale embeddings.
+    category: TEXT, DIAGRAM, TABLE, etc.
+    element_type: Title, NarrativeText, ListItem, etc. (comma-separated for multiple).
+    """
+    query = db.query(ParsedElement).order_by(ParsedElement.document_id, ParsedElement.order_index)
+    if document_id is not None:
+        query = query.filter(ParsedElement.document_id == document_id)
+    if unembedded_only:
+        query = query.filter(ParsedElement.vector_id.is_(None))
+    else:
+        query = query.filter(ParsedElement.embedding_vector.isnot(None))
+    if embedded_before:
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(embedded_before.replace("Z", "+00:00"))
+            query = query.filter(ParsedElement.embedded_at < dt)
+        except Exception:
+            pass
+    if category:
+        query = query.filter(ParsedElement.category == category)
+    if element_type:
+        types = [t.strip() for t in element_type.split(",") if t.strip()]
+        if types:
+            query = query.filter(ParsedElement.element_type.in_(types))
+    total = query.count()
+    rows = query.offset(offset).limit(limit).all()
+    out = []
+    for e in rows:
+        ev = e.embedding_vector
+        embed_dim = len(ev) if isinstance(ev, list) else None
+        text_preview = (e.text or "")[:200].strip() or None
+        item = {
+            "id": e.id,
+            "document_id": e.document_id,
+            "order_index": e.order_index,
+            "text_preview": text_preview,
+            "element_type": e.element_type,
+            "category": e.category,
+            "section_path": (e.section_path or "")[:100] if getattr(e, "section_path", None) else None,
+            "vector_id": e.vector_id,
+            "embed_dim": embed_dim,
+            "embedding_model": getattr(e, "embedding_model", None),
+            "embedded_at": getattr(e, "embedded_at", None),
+        }
+        if text_mode == "full":
+            item["text"] = (e.text or "").strip() or None
+        out.append(item)
+    return {
+        "total": total,
+        "returned": len(out),
+        "offset": offset,
+        "limit": limit,
+        "elements": out,
+    }
+
+
+@router.get("/chunks-with-embeddings")
+def get_chunks_with_embeddings(
+    document_id: Optional[int] = Depends(_parse_optional_document_id),
+    limit: int = 100,
+    offset: int = 0,
+    text_mode: str = Query("preview", description="preview (first 200 chars) or full"),
+    db: Session = Depends(get_db)
+):
+    """
+    List document chunks that have embeddings: text preview, section_path, vector_id, embed dim.
+    text_mode: preview (default) or full — full includes full text in each chunk.
+    Optional document_id to filter by document.
+    """
+    query = (
+        db.query(DocumentChunk)
+        .filter(DocumentChunk.embedding_vector.isnot(None))
+        .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index)
+    )
+    if document_id is not None:
+        query = query.filter(DocumentChunk.document_id == document_id)
+    total = query.count()
+    rows = query.offset(offset).limit(limit).all()
+    out = []
+    for c in rows:
+        ev = c.embedding_vector
+        embed_dim = len(ev) if isinstance(ev, list) else None
+        text_preview = (c.text or "")[:200].strip() or None
+        item = {
+            "id": c.id,
+            "document_id": c.document_id,
+            "chunk_index": c.chunk_index,
+            "text_preview": text_preview,
+            "section_path": (c.section_path or "")[:150],
+            "page_start": c.page_start,
+            "page_end": c.page_end,
+            "vector_id": c.vector_id,
+            "embed_dim": embed_dim,
+            "unit_id": c.unit_id,
+            "concept_id": c.concept_id,
+        }
+        if text_mode == "full":
+            item["text"] = (c.text or "").strip() or None
+        out.append(item)
+    return {
+        "total": total,
+        "returned": len(out),
+        "offset": offset,
+        "limit": limit,
+        "chunks": out,
+    }
+
+
+@router.get("/{document_id}", response_model=DocumentResponse)
 def get_document(document_id: int, db: Session = Depends(get_db)):
     """Get document by ID"""
     document = db.query(Document).filter(Document.id == document_id).first()
@@ -376,7 +673,7 @@ def get_document(document_id: int, db: Session = Depends(get_db)):
     return document
 
 
-@router.get("/documents/{document_id}/elements")
+@router.get("/{document_id}/elements")
 def get_document_elements(
     document_id: int,
     category: Optional[str] = None,
@@ -419,7 +716,7 @@ def get_document_elements(
     }
 
 
-@router.delete("/documents/{document_id}")
+@router.delete("/{document_id}")
 def delete_document(document_id: int, db: Session = Depends(get_db)):
     """Delete document and cleanup vectors from Qdrant"""
     
@@ -447,7 +744,9 @@ def delete_document(document_id: int, db: Session = Depends(get_db)):
         except Exception as e:
             print(f"⚠ File deletion failed: {str(e)}")
     
-    # Delete from database (cascade deletes elements)
+    # Delete chunks and elements first so FK is never set to NULL (avoids NotNullViolation)
+    db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).delete()
+    db.query(ParsedElement).filter(ParsedElement.document_id == document_id).delete()
     db.delete(document)
     db.commit()
     

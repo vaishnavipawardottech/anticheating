@@ -1,7 +1,7 @@
 """
 Embedding Generator
 Converts text to vector embeddings using SentenceTransformers
-Uses BAAI/bge-base-en-v1.5 model (768 dimensions, English-optimized, high quality)
+Uses all-MiniLM-L6-v2 model (384 dimensions, fast, good quality)
 """
 
 from typing import List, Optional
@@ -13,17 +13,16 @@ class EmbeddingGenerator:
     """
     Generate embeddings for text using SentenceTransformers
     
-    Model: BAAI/bge-base-en-v1.5
-    - Dimensions: 768
-    - Speed: Fast (~5,000 sentences/sec on GPU)
-    - Quality: High quality for English academic content
-    - Size: ~438MB
-    - Optimized for: English text, semantic search
+    Model: all-MiniLM-L6-v2
+    - Dimensions: 384
+    - Speed: Fast (~14,000 sentences/sec on GPU)
+    - Quality: Good for semantic search
+    - Size: ~80MB
     """
     
     # Model configuration
-    DEFAULT_MODEL = "BAAI/bge-base-en-v1.5"
-    EMBEDDING_DIM = 768
+    DEFAULT_MODEL = "all-MiniLM-L6-v2"
+    EMBEDDING_DIM = 384
     
     def __init__(self, model_name: str = DEFAULT_MODEL):
         """

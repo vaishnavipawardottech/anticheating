@@ -1,20 +1,26 @@
 """
-Search Router - Semantic Search Endpoint
-Provides natural language search across indexed documents
+Search Router - Semantic and Hybrid Search
+- Semantic: vector search (Qdrant) over chunks.
+- Hybrid: Postgres FTS (BM25-ish) + Qdrant vector, merge scores (RRF), optional rerank.
 """
 
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from pydantic import BaseModel, Field
 import time
+import re
 
 from database.database import get_db
-from database.models import ParsedElement, Document
+from database.models import ParsedElement, Document, DocumentChunk
 from embeddings import get_embedding_generator
 from embeddings.qdrant_manager import get_qdrant_manager
 
 router = APIRouter(prefix="/search", tags=["search"])
+
+# RRF constant (reciprocal rank fusion): 1/(k + rank)
+RRF_K = 60
 
 
 # Request/Response Schemas
@@ -22,14 +28,28 @@ class SemanticSearchRequest(BaseModel):
     """Request schema for semantic search"""
     query: str = Field(..., description="Natural language search query", min_length=1)
     subject_id: int = Field(..., description="Subject ID to search within")
-    category: Optional[str] = Field(None, description="Filter by category (TEXT, DIAGRAM, TABLE, CODE, OTHER)")
+    category: Optional[str] = Field(None, description="Filter by category (TEXT, DIAGRAM, TABLE, CODE, CHUNK, OTHER)")
     document_id: Optional[int] = Field(None, description="Filter by specific document ID")
+    unit_id: Optional[int] = Field(None, description="Filter by unit (chunks only)")
+    concept_ids: Optional[List[int]] = Field(None, description="Filter by concept IDs (chunks only)")
+    section_path_prefix: Optional[str] = Field(None, description="Exact section_path match (chunks only)")
     limit: int = Field(10, description="Maximum number of results", ge=1, le=100)
     min_score: float = Field(0.0, description="Minimum similarity score (0-1)", ge=0.0, le=1.0)
 
 
+class HybridSearchRequest(BaseModel):
+    """Request for hybrid FTS + vector search with optional rerank"""
+    query: str = Field(..., description="Search query (natural language or keywords)", min_length=1)
+    subject_id: int = Field(..., description="Subject ID to search within")
+    document_id: Optional[int] = Field(None, description="Filter by document")
+    limit: int = Field(10, description="Final number of results", ge=1, le=100)
+    use_fts: bool = Field(True, description="Include Postgres full-text search")
+    use_vector: bool = Field(True, description="Include Qdrant vector search")
+    rerank_top_n: Optional[int] = Field(None, description="Rerank top N after merge (e.g. 30→8); None = no rerank")
+
+
 class SearchResult(BaseModel):
-    """Single search result"""
+    """Single search result (chunk or element)"""
     element_id: int
     score: float
     text: str
@@ -38,6 +58,7 @@ class SearchResult(BaseModel):
     document_id: int
     document_filename: str
     subject_id: int
+    section_path: Optional[str] = None
 
 
 class SemanticSearchResponse(BaseModel):
@@ -81,57 +102,63 @@ async def semantic_search(
         generator = get_embedding_generator()
         query_embedding = generator.generate_embedding(request.query)
         
-        # 2. Build Qdrant filter
-        qdrant_filter = {
-            "subject_id": request.subject_id
-        }
-        
-        if request.category:
-            qdrant_filter["category"] = request.category
-        
-        if request.document_id:
-            qdrant_filter["document_id"] = request.document_id
-        
-        # 3. Search Qdrant
+        # 2. Search Qdrant (filters passed as named params)
         qdrant = get_qdrant_manager()
         qdrant_results = qdrant.search(
             query_vector=query_embedding,
             limit=request.limit,
-            score_threshold=request.min_score,
             subject_id=request.subject_id,
             category=request.category,
-            document_id=request.document_id
+            document_id=request.document_id,
+            unit_id=request.unit_id,
+            concept_ids=request.concept_ids,
+            section_path=request.section_path_prefix,
+            score_threshold=request.min_score
         )
         
-        # 4. Enrich results with database data
+        # 4. Enrich results with database data (elements or chunks)
         results = []
         for qr in qdrant_results:
-            # Get element from database
-            element = db.query(ParsedElement).filter(
-                ParsedElement.id == qr["element_id"]
-            ).first()
-            
-            if not element:
-                continue  # Skip if element not found
-            
-            # Get document metadata
-            document = db.query(Document).filter(
-                Document.id == element.document_id
-            ).first()
-            
-            if not document:
-                continue  # Skip if document not found
-            
-            results.append(SearchResult(
-                element_id=element.id,
-                score=qr["score"],
-                text=element.text or "",
-                category=element.category,
-                page_number=element.page_number,
-                document_id=document.id,
-                document_filename=document.filename,
-                subject_id=document.subject_id
-            ))
+            if qr.get("point_type") == "chunk" and qr.get("chunk_id") is not None:
+                chunk = db.query(DocumentChunk).filter(DocumentChunk.id == qr["chunk_id"]).first()
+                if not chunk:
+                    continue
+                document = db.query(Document).filter(Document.id == chunk.document_id).first()
+                if not document:
+                    continue
+                results.append(SearchResult(
+                    element_id=chunk.id,
+                    score=qr["score"],
+                    text=chunk.text or "",
+                    category="CHUNK",
+                    page_number=chunk.page_start,
+                    document_id=document.id,
+                    document_filename=document.filename,
+                    subject_id=document.subject_id,
+                    section_path=chunk.section_path,
+                ))
+            else:
+                element = db.query(ParsedElement).filter(
+                    ParsedElement.id == qr.get("element_id")
+                ).first()
+                if not element:
+                    continue
+                document = db.query(Document).filter(
+                    Document.id == element.document_id
+                ).first()
+                if not document:
+                    continue
+                results.append(SearchResult(
+                    element_id=element.id,
+                    score=qr["score"],
+                    text=element.text or "",
+                    category=element.category,
+                    page_number=element.page_number,
+                    document_id=document.id,
+                    document_filename=document.filename,
+                    subject_id=document.subject_id,
+                    section_path=getattr(element, "section_path", None),
+                ))
         
         search_time = (time.time() - start_time) * 1000
         
@@ -149,22 +176,158 @@ async def semantic_search(
         )
 
 
+def _rerank_by_keyword_overlap(query: str, chunk_ids: List[int], chunks_by_id: dict) -> List[int]:
+    """Simple rerank: boost chunks that contain more query terms. Returns reordered chunk_ids."""
+    if not query or not chunk_ids:
+        return chunk_ids
+    terms = set(re.findall(r"\w+", query.lower()))
+    if not terms:
+        return chunk_ids
+
+    def score(cid: int) -> float:
+        c = chunks_by_id.get(cid)
+        if not c or not c.text:
+            return 0.0
+        text_lower = (c.text or "").lower()
+        return sum(1 for t in terms if t in text_lower) / max(len(terms), 1)
+
+    scored = [(cid, score(cid)) for cid in chunk_ids]
+    scored.sort(key=lambda x: (-x[1], chunk_ids.index(x[0])))
+    return [cid for cid, _ in scored]
+
+
+@router.post("/hybrid", response_model=SemanticSearchResponse)
+async def hybrid_search(
+    request: HybridSearchRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Hybrid retrieval: Postgres full-text (BM25-ish) + Qdrant vector search.
+    Merges scores with RRF (reciprocal rank fusion). Optionally rerank top-N by keyword overlap.
+    Filter by doc/subject when possible.
+    """
+    start_time = time.time()
+    query = request.query.strip()
+    subject_id = request.subject_id
+    document_id = request.document_id
+    limit = request.limit
+    rerank_n = request.rerank_top_n
+
+    # 1) FTS: chunk ids and rank from Postgres (if search_vector column exists)
+    fts_scores: dict = {}  # chunk_id -> RRF contribution
+    try:
+        if request.use_fts:
+            q_escaped = query.replace("'", "''")
+            sql = text("""
+                SELECT c.id
+                FROM document_chunks c
+                JOIN documents d ON d.id = c.document_id
+                WHERE d.subject_id = :sid
+                AND c.search_vector @@ plainto_tsquery('english', :q)
+                AND (:doc_id IS NULL OR c.document_id = :doc_id)
+                ORDER BY ts_rank_cd(c.search_vector, plainto_tsquery('english', :q)) DESC
+                LIMIT 100
+            """)
+            params = {"sid": subject_id, "q": q_escaped, "doc_id": document_id}
+            rows = db.execute(sql, params).fetchall()
+            for rank_1based, (cid,) in enumerate(rows, start=1):
+                # RRF: 1/(k+rank)
+                fts_scores[cid] = 1.0 / (RRF_K + rank_1based)
+    except Exception:
+        # search_vector column or trigger may not exist yet
+        pass
+
+    # 2) Vector: chunk ids and scores from Qdrant
+    vector_scores: dict = {}
+    if request.use_vector:
+        try:
+            gen = get_embedding_generator()
+            query_vector = gen.generate_embedding(query)
+            qdrant = get_qdrant_manager()
+            raw = qdrant.search(
+                query_vector=query_vector,
+                limit=100,
+                subject_id=subject_id,
+                document_id=document_id,
+                score_threshold=0.0,
+            )
+            for rank_1based, r in enumerate(raw, start=1):
+                if r.get("point_type") == "chunk" and r.get("chunk_id") is not None:
+                    cid = r["chunk_id"]
+                    vector_scores[cid] = 1.0 / (RRF_K + rank_1based)
+        except Exception:
+            pass
+
+    # 3) Merge: RRF sum per chunk_id
+    all_ids = set(fts_scores.keys()) | set(vector_scores.keys())
+    merged = [(cid, fts_scores.get(cid, 0) + vector_scores.get(cid, 0)) for cid in all_ids]
+    merged.sort(key=lambda x: -x[1])
+    ordered_chunk_ids = [cid for cid, _ in merged[: limit * 3]]
+
+    # 4) Optional rerank: take top rerank_n, rerank by keyword overlap, then top limit
+    if rerank_n and ordered_chunk_ids:
+        top_for_rerank = ordered_chunk_ids[: rerank_n]
+        chunks = (
+            db.query(DocumentChunk)
+            .filter(DocumentChunk.id.in_(top_for_rerank))
+            .all()
+        )
+        chunks_by_id = {c.id: c for c in chunks}
+        ordered_chunk_ids = _rerank_by_keyword_overlap(query, top_for_rerank, chunks_by_id)
+
+    ordered_chunk_ids = ordered_chunk_ids[: limit]
+
+    # 5) Enrich from DB
+    results = []
+    for cid in ordered_chunk_ids:
+        chunk = db.query(DocumentChunk).filter(DocumentChunk.id == cid).first()
+        if not chunk:
+            continue
+        doc = db.query(Document).filter(Document.id == chunk.document_id).first()
+        if not doc:
+            continue
+        results.append(SearchResult(
+            element_id=chunk.id,
+            score=1.0,
+            text=chunk.text or "",
+            category="CHUNK",
+            page_number=chunk.page_start,
+            document_id=doc.id,
+            document_filename=doc.filename,
+            subject_id=doc.subject_id,
+            section_path=chunk.section_path,
+        ))
+
+    search_time = (time.time() - start_time) * 1000
+    return SemanticSearchResponse(
+        query=query,
+        total_results=len(results),
+        results=results,
+        search_time_ms=round(search_time, 2),
+    )
+
+
 @router.get("/health")
 def search_health():
     """Check if search service is available"""
     try:
-        # Check embedding generator
         generator = get_embedding_generator()
-        
-        # Check Qdrant
         qdrant = get_qdrant_manager()
         info = qdrant.get_collection_info()
-        
+        chunks_info = info.get("chunks") or {}
+        total_vectors = (chunks_info.get("points_count") or 0) + (
+            (info.get("elements") or {}).get("points_count") or 0
+        )
         return {
             "status": "healthy",
             "embedding_model": generator.get_model_info()["model_name"],
-            "qdrant_collection": info.get("collection_name", "academic_elements"),
-            "indexed_vectors": info.get("points_count", 0)
+            "embedding_dim": generator.get_model_info().get("embedding_dimension", 384),
+            "qdrant_chunks": chunks_info.get("collection_name"),
+            "qdrant_elements": (info.get("elements") or {}).get("collection_name"),
+            "vector_size": chunks_info.get("vector_size", 384),
+            "indexed_vectors": total_vectors,
+            "chunks_count": chunks_info.get("points_count", 0),
+            "elements_count": (info.get("elements") or {}).get("points_count", 0),
         }
     except Exception as e:
         return {

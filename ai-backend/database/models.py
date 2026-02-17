@@ -7,7 +7,7 @@ NO document references, NO embeddings, NO vectors here.
 """
 
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, Float, JSON
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, backref
 from sqlalchemy.sql import func
 from database.database import Base
 
@@ -164,6 +164,7 @@ class ParsedElement(Base):
     category = Column(String(20), nullable=False, index=True)  # TEXT, DIAGRAM, TABLE, CODE, FORMULA
     text = Column(Text, nullable=True)
     page_number = Column(Integer, nullable=True)
+    section_path = Column(Text, nullable=True)  # Hierarchy e.g. "Unit II > OSI Model > Layer 3"
     element_metadata = Column(JSON, default={}, nullable=False)  # Renamed from 'metadata' (reserved word)
     
     # Classification
@@ -177,6 +178,9 @@ class ParsedElement(Base):
     # Vector DB reference
     vector_id = Column(String(100), nullable=True, unique=True)  # Qdrant point ID
     indexed_at = Column(DateTime(timezone=True), nullable=True)
+    embedding_model = Column(String(100), nullable=True)  # e.g. all-MiniLM-L6-v2
+    embedding_dim = Column(Integer, nullable=True)  # 384
+    embedded_at = Column(DateTime(timezone=True), nullable=True)
     
     # Embedding storage (for backup/debugging)
     embedding_vector = Column(JSON, nullable=True)  # 384-dimensional embedding as JSON array
@@ -190,3 +194,90 @@ class ParsedElement(Base):
     
     def __repr__(self):
         return f"<ParsedElement(id={self.id}, doc_id={self.document_id}, type='{self.element_type}', category='{self.category}')>"
+
+
+class DocumentChunk(Base):
+    """
+    Section-aware chunk of document content for retrieval and question generation.
+    Built from consecutive TEXT elements; carries section_path and optional unit/concept tags.
+    """
+    __tablename__ = "document_chunks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    chunk_index = Column(Integer, nullable=False)  # Order of chunk within document
+
+    text = Column(Text, nullable=False)
+    section_path = Column(Text, nullable=True)  # Section hierarchy; can be long for deep slide decks
+    page_start = Column(Integer, nullable=True)
+    page_end = Column(Integer, nullable=True)
+    source_element_orders = Column(JSON, default=list, nullable=False)  # List of ParsedElement order_index
+    token_count = Column(Integer, nullable=True)  # Approx tokens for context budgeting
+    chunk_type = Column(String(30), default="text", nullable=False)  # text, table_row, table_schema
+    table_id = Column(Integer, nullable=True)  # element order of source table (for table_row/table_schema)
+    row_id = Column(Integer, nullable=True)    # 0-based row index (for table_row only)
+
+    unit_id = Column(Integer, ForeignKey("units.id", ondelete="SET NULL"), nullable=True, index=True)
+    concept_id = Column(Integer, ForeignKey("concepts.id", ondelete="SET NULL"), nullable=True, index=True)
+    alignment_confidence = Column(Float, nullable=True)
+
+    embedding_vector = Column(JSON, nullable=True)
+    vector_id = Column(String(100), nullable=True, unique=True)
+    indexed_at = Column(DateTime(timezone=True), nullable=True)
+    embedding_model = Column(String(100), nullable=True)
+    embedding_dim = Column(Integer, nullable=True)
+    embedded_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    document = relationship("Document", backref=backref("chunks", cascade="all, delete-orphan"))
+    unit = relationship("Unit", backref="chunks")
+    concept = relationship("Concept", backref="chunks")
+
+    def __repr__(self):
+        return f"<DocumentChunk(id={self.id}, doc_id={self.document_id}, chunk_index={self.chunk_index})>"
+
+
+class Exam(Base):
+    """Generated exam: blueprint, seed, and link to subject."""
+    __tablename__ = "exams"
+
+    id = Column(Integer, primary_key=True, index=True)
+    subject_id = Column(Integer, ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False, index=True)
+    blueprint = Column(JSON, nullable=False)  # unit_ids/concept_ids, counts, difficulty, Bloom, seed
+    seed = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    subject = relationship("Subject", backref="exams")
+    questions = relationship("Question", back_populates="exam", cascade="all, delete-orphan")
+
+
+class Question(Base):
+    """Single question in an exam: type, difficulty, Bloom, text, answer key."""
+    __tablename__ = "questions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    exam_id = Column(Integer, ForeignKey("exams.id", ondelete="CASCADE"), nullable=False, index=True)
+    type = Column(String(20), nullable=False)  # mcq, short, long
+    difficulty = Column(String(20), nullable=True)  # easy, medium, hard
+    bloom_level = Column(String(50), nullable=True)
+    text = Column(Text, nullable=False)
+    explanation = Column(Text, nullable=True)
+    answer_key = Column(JSON, nullable=True)  # correct_option, key_points, rubric, etc.
+    tags = Column(JSON, default=list, nullable=True)
+
+    exam = relationship("Exam", back_populates="questions")
+
+
+class QuestionSource(Base):
+    """Traceability: which chunk(s) a question was generated from."""
+    __tablename__ = "question_sources"
+
+    id = Column(Integer, primary_key=True, index=True)
+    question_id = Column(Integer, ForeignKey("questions.id", ondelete="CASCADE"), nullable=False, index=True)
+    chunk_id = Column(Integer, ForeignKey("document_chunks.id", ondelete="SET NULL"), nullable=True, index=True)
+    page_start = Column(Integer, nullable=True)
+    page_end = Column(Integer, nullable=True)
+
+    question = relationship("Question", backref="sources")
+    chunk = relationship("DocumentChunk", backref="question_sources")

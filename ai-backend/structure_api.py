@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from database.database import engine, Base
-from routers import subjects, units, concepts, structure_ai, documents, cleanup, alignment, documents_db, search
+from routers import subjects, units, concepts, structure_ai, documents, cleanup, alignment, documents_db, search, context, exams
 
 
 @asynccontextmanager
@@ -43,16 +43,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
+# Include routers (documents_db before documents so GET /documents/elements-with-embeddings
+# is matched before GET /documents/{document_id}, avoiding 422)
 app.include_router(subjects.router)
 app.include_router(units.router)
 app.include_router(concepts.router)
 app.include_router(structure_ai.router)
+app.include_router(documents_db.router)
 app.include_router(documents.router)
-app.include_router(documents_db.router)  # New DB-integrated endpoint
 app.include_router(cleanup.router)
 app.include_router(alignment.router)
 app.include_router(search.router)  # Semantic search endpoint
+app.include_router(context.router)  # Context builder for RAG
+app.include_router(exams.router)   # Exam generation
 
 
 @app.get("/")

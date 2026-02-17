@@ -2,11 +2,13 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, Sparkles, History, Trash2 } from 'lucide-react';
 import './CreateExam.css';
 
+const API_BASE = 'http://localhost:8001';
+
 const CreateExam = () => {
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
-      content: 'Hello! I\'m your AI assistant. I can help you create exams, generate questions, and customize your assessment. What would you like to create today?'
+      content: 'Select a subject and units below, set question counts, then click "Generate exam" to create a paper from your ingested content.'
     }
   ]);
   const [inputMessage, setInputMessage] = useState('');
@@ -17,6 +19,17 @@ const CreateExam = () => {
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
+  // Blueprint state for real /exams/generate
+  const [subjects, setSubjects] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [selectedSubjectId, setSelectedSubjectId] = useState(null);
+  const [selectedUnitIds, setSelectedUnitIds] = useState([]);
+  const [counts, setCounts] = useState({ mcq: 10, short: 5, long: 2 });
+  const [includeAnswerKey, setIncludeAnswerKey] = useState(true);
+  const [generateLoading, setGenerateLoading] = useState(false);
+  const [generateError, setGenerateError] = useState(null);
+  const [lastExamResult, setLastExamResult] = useState(null);
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -24,6 +37,26 @@ const CreateExam = () => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/subjects/`).then(r => r.json()).then(setSubjects).catch(() => setSubjects([]));
+  }, []);
+
+  useEffect(() => {
+    if (!selectedSubjectId) {
+      setUnits([]);
+      setSelectedUnitIds([]);
+      return;
+    }
+    fetch(`${API_BASE}/subjects/${selectedSubjectId}/complete`)
+      .then(r => r.json())
+      .then((data) => {
+        const u = data.units || [];
+        setUnits(u);
+        setSelectedUnitIds(u.map(unit => unit.id));
+      })
+      .catch(() => setUnits([]));
+  }, [selectedSubjectId]);
 
   const autoResizeTextarea = () => {
     const textarea = inputRef.current;
@@ -37,29 +70,65 @@ const CreateExam = () => {
     autoResizeTextarea();
   }, [inputMessage]);
 
+  const handleGenerateExam = async (e) => {
+    e.preventDefault();
+    if (!selectedSubjectId) {
+      setGenerateError('Please select a subject.');
+      return;
+    }
+    setGenerateLoading(true);
+    setGenerateError(null);
+    setLastExamResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/exams/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject_id: selectedSubjectId,
+          unit_ids: selectedUnitIds.length ? selectedUnitIds : null,
+          concept_ids: null,
+          counts: { mcq: counts.mcq, short: counts.short, long: counts.long },
+          include_answer_key: includeAnswerKey,
+          seed: Math.floor(Math.random() * 0x7fffffff),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = Array.isArray(data.detail) ? data.detail.map(d => d.msg || d.loc).join(', ') : (data.detail || data.message || `Request failed (${res.status})`);
+        if (res.status === 404) {
+          throw new Error('Exams API not found (404). Restart the backend so /exams/generate is available.');
+        }
+        throw new Error(msg);
+      }
+      setLastExamResult(data);
+      setMessages(prev => [...prev,
+        { role: 'user', content: `Generate exam: ${counts.mcq} MCQ, ${counts.short} short, ${counts.long} long` },
+        { role: 'assistant', content: `Exam created. Exam ID: ${data.exam_id}, questions generated: ${data.questions_generated}. Seed: ${data.seed}.` }
+      ]);
+    } catch (err) {
+      setGenerateError(err.message || 'Failed to generate exam.');
+      setMessages(prev => [...prev,
+        { role: 'assistant', content: `Error: ${err.message}. Ensure you have ingested documents and (optionally) aligned concepts.` }
+      ]);
+    } finally {
+      setGenerateLoading(false);
+    }
+  };
+
   const handleSendMessage = async (e) => {
     e.preventDefault();
-    
     if (!inputMessage.trim()) return;
-
-    const userMessage = {
-      role: 'user',
-      content: inputMessage
-    };
-
+    const userMessage = { role: 'user', content: inputMessage };
     setMessages(prev => [...prev, userMessage]);
     setInputMessage('');
     setIsTyping(true);
-
-    // Simulate AI response (replace with actual API call)
     setTimeout(() => {
-      const aiResponse = {
+      setMessages(prev => [...prev, {
         role: 'assistant',
-        content: 'This is a simulated response. In production, this will connect to your AI backend to generate exams and questions.'
-      };
-      setMessages(prev => [...prev, aiResponse]);
+        content: 'Use the blueprint form above to generate an exam from your ingested content, or ask me anything about exam creation.'
+      }]);
       setIsTyping(false);
-    }, 1500);
+    }, 800);
   };
 
   const handleKeyPress = (e) => {
@@ -96,6 +165,58 @@ const CreateExam = () => {
             <History size={20} />
           </button>
         </div>
+
+        <section className="exam-blueprint">
+          <h2>Exam Blueprint</h2>
+          <div className="blueprint-row">
+            <label>Subject</label>
+            <select
+              value={selectedSubjectId ?? ''}
+              onChange={(e) => setSelectedSubjectId(e.target.value ? Number(e.target.value) : null)}
+            >
+              <option value="">Select subject</option>
+              {subjects.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </div>
+          {units.length > 0 && (
+            <div className="blueprint-row">
+              <label>Units</label>
+              <div className="unit-multiselect">
+                {units.map((u) => (
+                  <label key={u.id} className="unit-check">
+                    <input
+                      type="checkbox"
+                      checked={selectedUnitIds.includes(u.id)}
+                      onChange={(e) => setSelectedUnitIds(prev => e.target.checked ? [...prev, u.id] : prev.filter(id => id !== u.id))}
+                    />
+                    {u.name}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="blueprint-row counts-row">
+            <label>MCQ</label>
+            <input type="number" min={0} max={50} value={counts.mcq} onChange={(e) => setCounts(c => ({ ...c, mcq: +e.target.value || 0 }))} />
+            <label>Short</label>
+            <input type="number" min={0} max={20} value={counts.short} onChange={(e) => setCounts(c => ({ ...c, short: +e.target.value || 0 }))} />
+            <label>Long</label>
+            <input type="number" min={0} max={10} value={counts.long} onChange={(e) => setCounts(c => ({ ...c, long: +e.target.value || 0 }))} />
+          </div>
+          <div className="blueprint-row">
+            <label className="answer-key-toggle">
+              <input type="checkbox" checked={includeAnswerKey} onChange={(e) => setIncludeAnswerKey(e.target.checked)} />
+              Include answer key
+            </label>
+          </div>
+          {generateError && <p className="blueprint-error">{generateError}</p>}
+          {lastExamResult && <p className="blueprint-success">Exam ID: {lastExamResult.exam_id}, Questions: {lastExamResult.questions_generated}</p>}
+          <button type="button" className="generate-exam-btn" onClick={handleGenerateExam} disabled={generateLoading || !selectedSubjectId}>
+            {generateLoading ? 'Generating…' : 'Generate exam'}
+          </button>
+        </section>
 
         <div className="chat-container">
           <div className="messages-area">

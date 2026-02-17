@@ -6,6 +6,9 @@ import AllExams from './pages/AllExams'
 import ChangePassword from './pages/ChangePassword'
 import Login from './pages/Login'
 import IngestDocument from './pages/IngestDocument'
+import SubjectsList from './pages/SubjectsList'
+import SubjectDetail from './pages/SubjectDetail'
+import VectorsExplorer from './pages/VectorsExplorer'
 import './App.css'
 
 function App() {
@@ -27,6 +30,9 @@ function App() {
               <Route path="/exams" element={<AllExams />} />
               <Route path="/exams/create" element={<CreateExam />} />
               <Route path="/ingest" element={<IngestDocument />} />
+              <Route path="/subjects" element={<SubjectsList />} />
+              <Route path="/subjects/:subjectId" element={<SubjectDetail />} />
+              <Route path="/vectors" element={<VectorsExplorer />} />
             </Routes>
           </Layout>
         } />

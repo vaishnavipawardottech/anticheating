@@ -7,22 +7,25 @@ from typing import List, Dict, Optional, Any
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct,
-    Filter, FieldCondition, MatchValue, SearchRequest
+    Filter, FieldCondition, MatchValue, MatchAny
 )
 import os
 
 
 class QdrantManager:
     """
-    Manages Qdrant vector database operations
-    
-    Collection: academic_elements
-    - Stores embeddings for parsed document elements
-    - Metadata: document_id, subject_id, concept_id, category, page_number
+    Manages Qdrant vector database operations.
+
+    Two collections (one per retrieval unit; same dim = same model):
+    - academic_chunks: main retrieval index (chunk-level embeddings)
+    - academic_elements: optional element-level index for special cases
     """
-    
-    COLLECTION_NAME = "academic_elements"
-    EMBEDDING_DIM = 768  # BGE-base-en-v1.5 dimension
+
+    COLLECTION_ELEMENTS = "academic_elements"
+    COLLECTION_CHUNKS = "academic_chunks"
+    COLLECTION_NAME = "academic_elements"  # default/legacy alias for elements
+    EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 dimension
+    CHUNK_ID_OFFSET = 2**31  # Point IDs for chunks: chunk_id + OFFSET (avoids collision with element IDs)
     
     def __init__(
         self,
@@ -47,54 +50,63 @@ class QdrantManager:
         
         print(f"✓ Connected to Qdrant at {host}:{port}")
     
-    def create_collection(self, recreate: bool = False):
-        """
-        Create the academic_elements collection
-        
-        Args:
-            recreate: If True, delete existing collection and recreate
-        """
-        # Check if collection exists
+    def _create_collection_if_needed(
+        self,
+        collection_name: str,
+        recreate: bool = False,
+        payload_indexes: list = None,
+    ):
         collections = self.client.get_collections().collections
-        collection_names = [c.name for c in collections]
-        
-        if self.COLLECTION_NAME in collection_names:
+        names = [c.name for c in collections]
+        if collection_name in names:
             if recreate:
-                print(f"Deleting existing collection: {self.COLLECTION_NAME}")
-                self.client.delete_collection(self.COLLECTION_NAME)
+                self.client.delete_collection(collection_name)
+                print(f"Deleted existing: {collection_name}")
             else:
-                print(f"✓ Collection already exists: {self.COLLECTION_NAME}")
+                print(f"✓ Collection exists: {collection_name}")
                 return
-        
-        # Create collection
         self.client.create_collection(
-            collection_name=self.COLLECTION_NAME,
+            collection_name=collection_name,
             vectors_config=VectorParams(
                 size=self.EMBEDDING_DIM,
-                distance=Distance.COSINE  # Cosine similarity for semantic search
+                distance=Distance.COSINE,
+            ),
+        )
+        for field, schema in payload_indexes or []:
+            self.client.create_payload_index(
+                collection_name=collection_name,
+                field_name=field,
+                field_schema=schema,
             )
+        print(f"✓ Created collection: {collection_name}")
+
+    def create_collection(self, recreate: bool = False):
+        """
+        Create academic_elements and academic_chunks collections.
+        One collection per retrieval unit; same dim = same embedding model.
+        """
+        elem_indexes = [
+            ("document_id", "integer"),
+            ("subject_id", "integer"),
+            ("category", "keyword"),
+            ("concept_id", "integer"),
+            ("unit_id", "integer"),
+            ("section_path", "keyword"),
+        ]
+        chunk_indexes = [
+            ("document_id", "integer"),
+            ("subject_id", "integer"),
+            ("concept_id", "integer"),
+            ("unit_id", "integer"),
+            ("section_path", "keyword"),
+            ("chunk_type", "keyword"),
+        ]
+        self._create_collection_if_needed(
+            self.COLLECTION_ELEMENTS, recreate=recreate, payload_indexes=elem_indexes
         )
-        
-        # Create payload indexes for efficient filtering
-        self.client.create_payload_index(
-            collection_name=self.COLLECTION_NAME,
-            field_name="document_id",
-            field_schema="integer"
+        self._create_collection_if_needed(
+            self.COLLECTION_CHUNKS, recreate=recreate, payload_indexes=chunk_indexes
         )
-        
-        self.client.create_payload_index(
-            collection_name=self.COLLECTION_NAME,
-            field_name="subject_id",
-            field_schema="integer"
-        )
-        
-        self.client.create_payload_index(
-            collection_name=self.COLLECTION_NAME,
-            field_name="category",
-            field_schema="keyword"
-        )
-        
-        print(f"✓ Created collection: {self.COLLECTION_NAME}")
     
     def index_element(
         self,
@@ -120,7 +132,7 @@ class QdrantManager:
         )
         
         self.client.upsert(
-            collection_name=self.COLLECTION_NAME,
+            collection_name=self.COLLECTION_ELEMENTS,
             points=[point]
         )
         
@@ -146,34 +158,48 @@ class QdrantManager:
         if not (len(element_ids) == len(embeddings) == len(metadatas)):
             raise ValueError("element_ids, embeddings, and metadatas must have same length")
         
-        # Filter out None embeddings (safety check)
-        valid_data = [
-            (eid, emb, meta) 
-            for eid, emb, meta in zip(element_ids, embeddings, metadatas)
-            if emb is not None and len(emb) == self.EMBEDDING_DIM
-        ]
-        
-        if not valid_data:
-            print("⚠ No valid embeddings to index")
-            return []
-        
         points = [
             PointStruct(
                 id=element_id,
                 vector=embedding,
                 payload=metadata
             )
-            for element_id, embedding, metadata in valid_data
+            for element_id, embedding, metadata in zip(element_ids, embeddings, metadatas)
         ]
         
         self.client.upsert(
-            collection_name=self.COLLECTION_NAME,
+            collection_name=self.COLLECTION_ELEMENTS,
             points=points
         )
         
         print(f"✓ Indexed {len(points)} elements to Qdrant")
         
-        return [str(eid) for eid, _, _ in valid_data]
+        return [str(eid) for eid in element_ids]
+    
+    def index_chunks_batch(
+        self,
+        chunk_ids: List[int],
+        embeddings: List[List[float]],
+        metadatas: List[Dict[str, Any]]
+    ) -> List[str]:
+        """
+        Index document chunks with unit/concept/section metadata.
+        Uses point id = chunk_id + CHUNK_ID_OFFSET. Stores in academic_chunks collection.
+        Metadata should include: subject_id, document_id, unit_id, concept_id, section_path, page_start, page_end.
+        """
+        if not (len(chunk_ids) == len(embeddings) == len(metadatas)):
+            raise ValueError("chunk_ids, embeddings, and metadatas must have same length")
+        points = [
+            PointStruct(
+                id=chunk_id + self.CHUNK_ID_OFFSET,
+                vector=emb,
+                payload={**meta, "point_type": "chunk", "chunk_id": chunk_id}
+            )
+            for chunk_id, emb, meta in zip(chunk_ids, embeddings, metadatas)
+        ]
+        self.client.upsert(collection_name=self.COLLECTION_CHUNKS, points=points)
+        print(f"✓ Indexed {len(points)} chunks to Qdrant")
+        return [str(cid) for cid in chunk_ids]
     
     def search(
         self,
@@ -182,96 +208,131 @@ class QdrantManager:
         subject_id: Optional[int] = None,
         category: Optional[str] = None,
         document_id: Optional[int] = None,
-        score_threshold: float = 0.5
+        unit_id: Optional[int] = None,
+        concept_ids: Optional[List[int]] = None,
+        section_path: Optional[str] = None,
+        score_threshold: float = 0.5,
+        search_chunks: bool = True,
+        search_elements: bool = False,
     ) -> List[Dict[str, Any]]:
         """
-        Semantic search with optional filters
-        
-        Args:
-            query_vector: Query embedding
-            limit: Max results to return
-            subject_id: Filter by subject
-            category: Filter by category (TEXT, DIAGRAM, etc.)
-            document_id: Filter by document
-            score_threshold: Minimum similarity score
-            
-        Returns:
-            List of search results with scores and metadata
+        Semantic search. By default searches academic_chunks (main retrieval).
+        Set search_elements=True to also search academic_elements (special cases).
         """
-        # Build filter conditions
         must_conditions = []
-        
         if subject_id is not None:
             must_conditions.append(
-                FieldCondition(
-                    key="subject_id",
-                    match=MatchValue(value=subject_id)
-                )
+                FieldCondition(key="subject_id", match=MatchValue(value=subject_id))
             )
-        
         if category is not None:
             must_conditions.append(
-                FieldCondition(
-                    key="category",
-                    match=MatchValue(value=category)
-                )
+                FieldCondition(key="category", match=MatchValue(value=category))
             )
-        
         if document_id is not None:
             must_conditions.append(
-                FieldCondition(
-                    key="document_id",
-                    match=MatchValue(value=document_id)
-                )
+                FieldCondition(key="document_id", match=MatchValue(value=document_id))
             )
-        
-        # Build filter
+        if unit_id is not None:
+            must_conditions.append(
+                FieldCondition(key="unit_id", match=MatchValue(value=unit_id))
+            )
+        if concept_ids:
+            must_conditions.append(
+                FieldCondition(key="concept_id", match=MatchAny(any=concept_ids))
+            )
+        if section_path is not None and section_path != "":
+            must_conditions.append(
+                FieldCondition(key="section_path", match=MatchValue(value=section_path))
+            )
         search_filter = Filter(must=must_conditions) if must_conditions else None
-        
-        # Search using query_points
-        search_result = self.client.query_points(
-            collection_name=self.COLLECTION_NAME,
-            query=query_vector,
-            query_filter=search_filter,
-            limit=limit,
-            score_threshold=score_threshold
-        )
-        
-        # Format results
-        formatted_results = []
-        for result in search_result.points:
-            formatted_results.append({
-                "element_id": result.id,
-                "score": result.score,
-                "metadata": result.payload
-            })
-        
-        return formatted_results
+
+        formatted_results: List[Dict[str, Any]] = []
+
+        if search_chunks:
+            try:
+                collections = self.client.get_collections().collections
+                if any(c.name == self.COLLECTION_CHUNKS for c in collections):
+                    chunk_results = self.client.search(
+                        collection_name=self.COLLECTION_CHUNKS,
+                        query_vector=query_vector,
+                        query_filter=search_filter,
+                        limit=limit,
+                        score_threshold=score_threshold,
+                    )
+                    for result in chunk_results:
+                        payload = result.payload or {}
+                        formatted_results.append({
+                            "point_type": "chunk",
+                            "chunk_id": payload.get("chunk_id"),
+                            "element_id": None,
+                            "score": result.score,
+                            "metadata": payload,
+                        })
+            except Exception:
+                pass
+
+        if search_elements and len(formatted_results) < limit:
+            try:
+                collections = self.client.get_collections().collections
+                if any(c.name == self.COLLECTION_ELEMENTS for c in collections):
+                    elem_results = self.client.search(
+                        collection_name=self.COLLECTION_ELEMENTS,
+                        query_vector=query_vector,
+                        query_filter=search_filter,
+                        limit=limit - len(formatted_results),
+                        score_threshold=score_threshold,
+                    )
+                    for result in elem_results:
+                        formatted_results.append({
+                            "point_type": "element",
+                            "element_id": result.id,
+                            "chunk_id": None,
+                            "score": result.score,
+                            "metadata": result.payload or {},
+                        })
+            except Exception:
+                pass
+
+        # Sort by score descending and cap at limit
+        formatted_results.sort(key=lambda x: x.get("score") or 0, reverse=True)
+        return formatted_results[:limit]
     
     def delete_by_document(self, document_id: int):
-        """Delete all vectors for a document"""
-        self.client.delete(
-            collection_name=self.COLLECTION_NAME,
-            points_selector=Filter(
-                must=[
-                    FieldCondition(
-                        key="document_id",
-                        match=MatchValue(value=document_id)
-                    )
-                ]
-            )
+        """Delete all vectors for a document from both chunks and elements collections."""
+        doc_filter = Filter(
+            must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]
         )
-        print(f"✓ Deleted vectors for document {document_id}")
-    
+        for coll_name in (self.COLLECTION_CHUNKS, self.COLLECTION_ELEMENTS):
+            try:
+                collections = self.client.get_collections().collections
+                if not any(c.name == coll_name for c in collections):
+                    continue
+                self.client.delete(collection_name=coll_name, points_selector=doc_filter)
+                print(f"✓ Deleted vectors for document {document_id} from {coll_name}")
+            except Exception as e:
+                if "doesn't exist" in str(e) or "404" in str(e) or "Not found" in str(e):
+                    continue
+                raise
+
     def get_collection_info(self) -> Dict[str, Any]:
-        """Get collection statistics"""
-        info = self.client.get_collection(self.COLLECTION_NAME)
-        return {
-            "name": info.config.params.vectors.size,
-            "vectors_count": info.vectors_count,
-            "points_count": info.points_count,
-            "status": info.status
-        }
+        """Get collection statistics for chunks (main) and elements."""
+        out = {"chunks": None, "elements": None}
+        for name, key in [(self.COLLECTION_CHUNKS, "chunks"), (self.COLLECTION_ELEMENTS, "elements")]:
+            try:
+                info = self.client.get_collection(name)
+                out[key] = {
+                    "collection_name": name,
+                    "vector_size": (
+                        info.config.params.vectors.size
+                        if info.config and info.config.params
+                        else self.EMBEDDING_DIM
+                    ),
+                    "points_count": info.points_count,
+                    "status": info.status,
+                }
+            except Exception:
+                out[key] = {"collection_name": name, "points_count": 0, "status": "missing"}
+        return out
 
 
 # Singleton instance
