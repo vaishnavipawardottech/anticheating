@@ -162,7 +162,7 @@ REMEMBER: Return ONLY valid JSON. No markdown, no explanations, no code blocks.
 # GEMINI CALL
 # ==========================================
 
-async def call_gemini_flash(prompt: str) -> str:
+async def call_gemini_flash(prompt: str, max_tokens: int = 1200) -> str:
     """
     Calls Gemini 2.5 Flash Lite using OpenAI-compatible API.
     Returns raw JSON string.
@@ -178,7 +178,7 @@ async def call_gemini_flash(prompt: str) -> str:
             ],
             temperature=0.1,
             response_format={"type": "json_object"},
-            max_tokens=4096,
+            max_tokens=max_tokens,
         )
 
         content = response.choices[0].message.content

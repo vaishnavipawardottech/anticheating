@@ -80,22 +80,25 @@
 │  │                                                           │        │
 │  └───────────────────────────────────────────────────────────┘        │
 │                                                                       │
-│  ┌──────────────── LAYER 3: SEARCH & CONTEXT ──────────────┐        │
-│  │                                                           │        │
+│  ┌──────────────── SEARCH & CONTEXT ──────────────────────┐        │
 │  │  [Semantic Search]  POST /search/semantic                 │        │
-│  │    • Qdrant vector search (chunks by default)            │        │
-│  │    • Filters: subject_id, document_id, unit, concept,     │        │
-│  │      section_path, min_score                             │        │
-│  │         ↓                                                 │        │
-│  │  [Hybrid Search]  POST /search/hybrid                    │        │
-│  │    • Postgres FTS (search_vector tsvector) + Qdrant       │        │
-│  │    • RRF merge; optional rerank (keyword overlap)         │        │
-│  │         ↓                                                 │        │
-│  │  [Context Builder]  POST /context/build                  │        │
-│  │    • RAG context: vector or filter-based chunk fetch      │        │
-│  │    • Neighbor chunks, token cap, citations                │        │
-│  │                                                           │        │
+│  │  [Hybrid Search]   POST /search/hybrid                   │        │
+│  │  [Context Builder] POST /context/build                    │        │
 │  └───────────────────────────────────────────────────────────┘        │
+│                                                                       │
+│  ┌──────────── LAYER 3: QUESTION BANK (concept-centric) ───────────┐  │
+│  │  Input: concept_id (or unit_id/subject_id); target counts       │  │
+│  │  • Concept context pack: chunks with alignment_confidence ≥ 0.65  │  │
+│  │    → MMR diversify → 3–8 chunks (token-safe)                     │  │
+│  │  • Generate: LLM (Gemini) → 2×MCQ, 1×Short, 1×Long per concept   │  │
+│  │    Output: strict Question JSON (source_chunk_ids, Bloom, etc.)  │  │
+│  │  • Bloom classifier: rule-based (verbs) + LLM verifier          │  │
+│  │  • Validator gates: groundedness, MCQ sanity, ambiguity, dedupe  │  │
+│  │    (Qdrant question_embeddings: same-concept >0.90, global >0.95)│  │
+│  │  • Store: question_bank, bank_question_sources, quality_scores,   │  │
+│  │    question_generation_runs                                     │  │
+│  │  POST /questions/generate   GET /questions   approve/reject/PATCH│  │
+│  └──────────────────────────────────────────────────────────────────┘  │
 │                                                                       │
 │  ┌──────────────── LAYER 4: EXAM GENERATION ───────────────┐        │
 │  │                                                           │        │
@@ -150,6 +153,9 @@
 │  │  • questions (id, exam_id, type, text, answer_key,         │      │
 │  │      difficulty, bloom_level)                             │      │
 │  │  • question_sources (question_id, chunk_id, page_start/end)│      │
+│  │  • question_bank (Layer 3: concept/unit/CO/Bloom, status)  │      │
+│  │  • bank_question_sources, question_generation_runs,        │      │
+│  │    question_quality_scores                                  │      │
 │  └────────────────────────────────────────────────────────────┘      │
 │                                                                       │
 │  ┌──────────────── Qdrant ───────────────────────────────────┐      │
@@ -158,6 +164,7 @@
 │  │      unit_id, concept_id, section_path, chunk_type,        │      │
 │  │      table_id, row_id, page_start/end                      │      │
 │  │  academic_elements  (optional element-level search)       │      │
+│  │  question_embeddings  (Layer 3 dedupe & search)          │      │
 │  │  Use: semantic + hybrid (FTS + vector) search             │      │
 │  └────────────────────────────────────────────────────────────┘      │
 │                                                                       │

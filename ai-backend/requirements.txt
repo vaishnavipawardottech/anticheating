@@ -55,7 +55,8 @@ numpy
 
 # LLM Integration
 ollama
-openai>=1.0.0  # Brain Upgrade: Used for text-embedding-3-small (1536-dim) + Gemini API
+openai>=1.0.0  # Used for Gemini (OpenAI-compatible API)
+json-repair>=0.58.0  # Fix malformed JSON from LLM responses
 
 # Vector Database
 qdrant-client

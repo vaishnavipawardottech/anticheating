@@ -319,6 +319,7 @@ class Question(Base):
     difficulty = Column(String(20), nullable=True)  # easy, medium, hard
     bloom_level = Column(String(50), nullable=True)
     text = Column(Text, nullable=False)
+    options = Column(JSON, nullable=True)  # ["A...", "B...", "C...", "D..."] for MCQs
     explanation = Column(Text, nullable=True)
     answer_key = Column(JSON, nullable=True)  # correct_option, key_points, rubric, etc.
     tags = Column(JSON, default=list, nullable=True)
@@ -338,3 +339,87 @@ class QuestionSource(Base):
 
     question = relationship("Question", backref="sources")
     chunk = relationship("DocumentChunk", backref="question_sources")
+
+
+# ==========================================
+# LAYER 3: QUESTION BANK (concept-centric pipeline)
+# ==========================================
+
+class BankQuestion(Base):
+    """
+    Question in the bank (Layer 3). Tagged with concept/unit/CO/Bloom; source_chunk_ids for traceability.
+    status: pending | approved | rejected
+    """
+    __tablename__ = "question_bank"
+
+    id = Column(Integer, primary_key=True, index=True)
+    subject_id = Column(Integer, ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False, index=True)
+    unit_id = Column(Integer, ForeignKey("units.id", ondelete="SET NULL"), nullable=True, index=True)
+    concept_id = Column(Integer, ForeignKey("concepts.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    question_text = Column(Text, nullable=False)
+    question_type = Column(String(20), nullable=False)  # MCQ, SHORT, LONG, NUMERICAL, DIAGRAM
+    marks = Column(Integer, default=1, nullable=False)
+    options = Column(JSON, nullable=True)  # ["A...", "B...", ...]
+    correct_answer = Column(String(20), nullable=True)  # A/B/C/D or key
+    answer_key = Column(JSON, nullable=True)  # rubric, key_points, steps
+    explanation = Column(Text, nullable=True)
+    bloom_level = Column(String(20), nullable=True)  # BT1–BT6
+    difficulty = Column(String(5), nullable=True)  # E, M, H
+    co_ids = Column(JSON, default=list, nullable=False)  # [] until CO manager
+    source_chunk_ids = Column(JSON, default=list, nullable=False)
+    quality_flags = Column(JSON, nullable=True)
+    generator_metadata = Column(JSON, nullable=True)
+
+    status = Column(String(20), default="pending", nullable=False, index=True)  # pending | approved | rejected
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    subject = relationship("Subject", backref="bank_questions")
+    unit = relationship("Unit", backref="bank_questions")
+    concept = relationship("Concept", backref="bank_questions")
+    sources = relationship("BankQuestionSource", back_populates="question", cascade="all, delete-orphan")
+
+
+class BankQuestionSource(Base):
+    """Traceability: which chunk(s) this bank question was generated from."""
+    __tablename__ = "bank_question_sources"
+
+    id = Column(Integer, primary_key=True, index=True)
+    question_id = Column(Integer, ForeignKey("question_bank.id", ondelete="CASCADE"), nullable=False, index=True)
+    chunk_id = Column(Integer, ForeignKey("document_chunks.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    question = relationship("BankQuestion", back_populates="sources")
+    chunk = relationship("DocumentChunk", backref="bank_question_sources")
+
+
+class QuestionGenerationRun(Base):
+    """Tracks each generation run for analytics: acceptance rate, fail reasons."""
+    __tablename__ = "question_generation_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    subject_id = Column(Integer, ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False, index=True)
+    unit_id = Column(Integer, ForeignKey("units.id", ondelete="SET NULL"), nullable=True, index=True)
+    concept_id = Column(Integer, ForeignKey("concepts.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    prompt_version = Column(String(50), nullable=True)
+    model = Column(String(100), nullable=True)
+    status = Column(String(20), default="running", nullable=False, index=True)  # running | completed | failed
+    counts_requested = Column(JSON, nullable=True)  # {mcq: 2, short: 1, long: 1}
+    counts_accepted = Column(JSON, nullable=True)  # {mcq: 1, short: 1, long: 0}
+    fail_reasons = Column(JSON, default=list, nullable=False)  # list of strings
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class QuestionQualityScore(Base):
+    """Per-question quality scores from validator (groundedness, ambiguity, duplicate)."""
+    __tablename__ = "question_quality_scores"
+
+    id = Column(Integer, primary_key=True, index=True)
+    question_id = Column(Integer, ForeignKey("question_bank.id", ondelete="CASCADE"), nullable=False, index=True)
+    grounded_score = Column(Float, nullable=True)  # 0–1
+    ambiguity_score = Column(Float, nullable=True)  # 0 = clear, 1 = ambiguous
+    duplicate_score = Column(Float, nullable=True)  # max similarity to existing
+    validator_model = Column(String(100), nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

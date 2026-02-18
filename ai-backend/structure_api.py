@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from database.database import engine, Base
-from routers import subjects, units, concepts, structure_ai, documents, cleanup, alignment, documents_db, search, context, exams
+from routers import subjects, units, concepts, structure_ai, documents, cleanup, alignment, documents_db, search, context, exams, questions
 
 
 @asynccontextmanager
@@ -56,6 +56,7 @@ app.include_router(alignment.router)
 app.include_router(search.router)  # Semantic search endpoint
 app.include_router(context.router)  # Context builder for RAG
 app.include_router(exams.router)   # Exam generation
+app.include_router(questions.router)  # Layer 3: Question bank (concept-centric pipeline)
 
 
 @app.get("/")

@@ -3,6 +3,7 @@ import Layout from './Layout'
 import Profile from './pages/Profile'
 import CreateExam from './pages/CreateExam'
 import AllExams from './pages/AllExams'
+import ViewExam from './pages/ViewExam'
 import ChangePassword from './pages/ChangePassword'
 import Login from './pages/Login'
 import IngestDocument from './pages/IngestDocument'
@@ -29,6 +30,7 @@ function App() {
               <Route path="/profile/change-password" element={<ChangePassword />} />
               <Route path="/exams" element={<AllExams />} />
               <Route path="/exams/create" element={<CreateExam />} />
+              <Route path="/exams/:examId" element={<ViewExam />} />
               <Route path="/ingest" element={<IngestDocument />} />
               <Route path="/subjects" element={<SubjectsList />} />
               <Route path="/subjects/:subjectId" element={<SubjectDetail />} />

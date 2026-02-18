@@ -4,6 +4,7 @@ Exam generation: blueprint → context → LLM → validate → store Exam + Que
 
 import json
 import random
+import json_repair
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -17,10 +18,73 @@ from routers.structure_ai import call_gemini_flash
 router = APIRouter(prefix="/exams", tags=["exams"])
 
 
-@router.get("/")
-def exams_root():
-    """Verify exams API is loaded; returns 200 with info."""
-    return {"status": "ok", "message": "POST /exams/generate to create an exam"}
+@router.get("/list")
+def list_exams(db: Session = Depends(get_db)):
+    """List all exams with subject name and question counts."""
+    from database.models import Subject
+    exams = (
+        db.query(Exam)
+        .join(Subject, Exam.subject_id == Subject.id)
+        .order_by(Exam.created_at.desc())
+        .all()
+    )
+    results = []
+    for ex in exams:
+        q_counts = {}
+        for q in ex.questions:
+            q_counts[q.type] = q_counts.get(q.type, 0) + 1
+        results.append({
+            "id": ex.id,
+            "subject_id": ex.subject_id,
+            "subject_name": ex.subject.name,
+            "blueprint": ex.blueprint,
+            "seed": ex.seed,
+            "created_at": ex.created_at.isoformat() if ex.created_at else None,
+            "total_questions": len(ex.questions),
+            "question_counts": q_counts,
+        })
+    return results
+
+
+@router.get("/{exam_id}")
+def get_exam(exam_id: int, db: Session = Depends(get_db)):
+    """Get a single exam with all its questions."""
+    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+    questions = []
+    for q in exam.questions:
+        questions.append({
+            "id": q.id,
+            "type": q.type,
+            "difficulty": q.difficulty,
+            "bloom_level": q.bloom_level,
+            "text": q.text,
+            "options": q.options,
+            "explanation": q.explanation,
+            "answer_key": q.answer_key,
+            "tags": q.tags,
+        })
+    return {
+        "id": exam.id,
+        "subject_id": exam.subject_id,
+        "subject_name": exam.subject.name,
+        "blueprint": exam.blueprint,
+        "seed": exam.seed,
+        "created_at": exam.created_at.isoformat() if exam.created_at else None,
+        "questions": questions,
+    }
+
+
+@router.delete("/{exam_id}")
+def delete_exam(exam_id: int, db: Session = Depends(get_db)):
+    """Delete an exam and all its questions."""
+    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+    db.delete(exam)
+    db.commit()
+    return {"status": "ok", "deleted_exam_id": exam_id}
 
 
 class BlueprintCounts(BaseModel):
@@ -106,12 +170,13 @@ async def generate_exam(request: ExamGenerateRequest, db: Session = Depends(get_
         long=request.counts.long,
     )
     try:
-        raw = await call_gemini_flash(prompt)
+        raw = await call_gemini_flash(prompt, max_tokens=8000)
         start = raw.find("[")
         end = raw.rfind("]") + 1
         if start == -1 or end == 0:
             raise ValueError("No JSON array in response")
-        items = json.loads(raw[start:end])
+        json_str = raw[start:end]
+        items = json_repair.loads(json_str)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LLM generation failed: {str(e)}")
 
@@ -147,12 +212,14 @@ async def generate_exam(request: ExamGenerateRequest, db: Session = Depends(get_
         text = q.get("text") or ""
         answer_key = q.get("answer_key") if request.include_answer_key else None
         tags = q.get("tags") or []
+        options = q.get("options") if qtype == "mcq" else None
         question = Question(
             exam_id=exam.id,
             type=qtype,
             difficulty=difficulty,
             bloom_level=bloom,
             text=text,
+            options=options,
             explanation=(answer_key or {}).get("why_correct") or (answer_key or {}).get("expected_answer"),
             answer_key=answer_key,
             tags=tags,

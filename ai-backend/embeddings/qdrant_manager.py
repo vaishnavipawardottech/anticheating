@@ -33,9 +33,11 @@ class QdrantManager:
 
     COLLECTION_ELEMENTS = "academic_elements"
     COLLECTION_CHUNKS = "academic_chunks"
+    COLLECTION_QUESTIONS = "question_embeddings"
     COLLECTION_NAME = "academic_elements"  # default/legacy alias for elements
     EMBEDDING_DIM = 1536  # Brain Upgrade: text-embedding-3-small (was 384)
     CHUNK_ID_OFFSET = 2**31  # Point IDs for chunks: chunk_id + OFFSET (avoids collision with element IDs)
+    QUESTION_ID_OFFSET = 2**30  # Point IDs for questions: question_id + OFFSET
     
     def __init__(
         self,
@@ -140,7 +142,90 @@ class QdrantManager:
         self._create_collection_if_needed(
             self.COLLECTION_CHUNKS, recreate=recreate, payload_indexes=chunk_indexes
         )
-    
+        question_indexes = [
+            ("subject_id", "integer"),
+            ("unit_id", "integer"),
+            ("concept_id", "integer"),
+        ]
+        self._create_collection_if_needed(
+            self.COLLECTION_QUESTIONS, recreate=recreate, payload_indexes=question_indexes
+        )
+
+    def ensure_question_collection(self):
+        """Ensure question_embeddings collection exists (for dedupe)."""
+        self._create_collection_if_needed(
+            self.COLLECTION_QUESTIONS,
+            payload_indexes=[
+                ("subject_id", "integer"),
+                ("unit_id", "integer"),
+                ("concept_id", "integer"),
+            ],
+        )
+
+    def index_question(
+        self,
+        question_id: int,
+        embedding: List[float],
+        subject_id: int,
+        unit_id: Optional[int] = None,
+        concept_id: Optional[int] = None,
+    ):
+        """Index a single question for dedupe/search. Point id = question_id + QUESTION_ID_OFFSET."""
+        self.ensure_question_collection()
+        point = PointStruct(
+            id=question_id + self.QUESTION_ID_OFFSET,
+            vector=embedding,
+            payload={
+                "question_id": question_id,
+                "subject_id": subject_id,
+                "unit_id": unit_id or 0,
+                "concept_id": concept_id or 0,
+            },
+        )
+        self.client.upsert(collection_name=self.COLLECTION_QUESTIONS, points=[point])
+
+    def search_question_duplicates(
+        self,
+        query_vector: List[float],
+        subject_id: Optional[int] = None,
+        unit_id: Optional[int] = None,
+        concept_id: Optional[int] = None,
+        limit: int = 10,
+        score_threshold: float = 0.0,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for similar questions (for dedupe).
+        Returns list of {question_id, score, ...}.
+        Use score_threshold=0.90 for same concept/unit dedupe, 0.95 for global.
+        """
+        self.ensure_question_collection()
+        must = [FieldCondition(key="subject_id", match=MatchValue(value=subject_id))] if subject_id else []
+        if unit_id is not None:
+            must.append(FieldCondition(key="unit_id", match=MatchValue(value=unit_id)))
+        if concept_id is not None:
+            must.append(FieldCondition(key="concept_id", match=MatchValue(value=concept_id)))
+        search_filter = Filter(must=must) if must else None
+        try:
+            results = self.client.search(
+                collection_name=self.COLLECTION_QUESTIONS,
+                query_vector=query_vector,
+                query_filter=search_filter,
+                limit=limit,
+                score_threshold=score_threshold,
+            )
+            return [
+                {
+                    "question_id": r.payload.get("question_id"),
+                    "score": r.score,
+                    "subject_id": r.payload.get("subject_id"),
+                    "unit_id": r.payload.get("unit_id"),
+                    "concept_id": r.payload.get("concept_id"),
+                }
+                for r in results
+            ]
+        except Exception:
+            return []
+
     def index_element(
         self,
         element_id: int,

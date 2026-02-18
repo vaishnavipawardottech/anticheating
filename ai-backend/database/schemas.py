@@ -205,3 +205,93 @@ class ParsedElementResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+# ==========================================
+# QUESTION BANK (Layer 3) – Contract schema
+# ==========================================
+
+QUESTION_TYPES = ("MCQ", "SHORT", "LONG", "NUMERICAL", "DIAGRAM")
+BLOOM_LEVELS = ("BT1", "BT2", "BT3", "BT4", "BT5", "BT6")
+DIFFICULTY_LEVELS = ("E", "M", "H")
+
+
+class GeneratorQuestionOutput(BaseModel):
+    """Strict schema every generator must output. Contract for validators + storage."""
+    question_text: str = Field(..., min_length=1, description="Question stem")
+    question_type: str = Field(..., description="MCQ | SHORT | LONG | NUMERICAL | DIAGRAM")
+    marks: int = Field(1, ge=1, le=20)
+    options: Optional[List[str]] = Field(None, description="For MCQ: 4 options")
+    correct_answer: Optional[str] = Field(None, description="For MCQ: letter A/B/C/D or option text")
+    answer_key: Optional[dict] = Field(None, description="Rubric, key points, steps for non-MCQ")
+    explanation: Optional[str] = Field(None, description="Short reasoning")
+    bloom_level: str = Field(..., description="BT1–BT6")
+    difficulty: str = Field(..., description="E | M | H")
+    concept_id: int = Field(..., gt=0)
+    unit_id: int = Field(..., gt=0)
+    subject_id: int = Field(..., gt=0)
+    co_ids: List[int] = Field(default_factory=list, description="Course outcomes (empty until CO manager)")
+    source_chunk_ids: List[int] = Field(default_factory=list, description="Anti-hallucination anchor")
+    quality_flags: Optional[dict] = Field(None, description="ambiguity, missing_context, etc.")
+    generator_metadata: Optional[dict] = Field(None, description="model, temperature, prompt_version, run_id")
+
+
+class QuestionBankBase(BaseModel):
+    """Fields shared for create/update/response"""
+    question_text: str
+    question_type: str
+    marks: int = 1
+    options: Optional[List[str]] = None
+    correct_answer: Optional[str] = None
+    answer_key: Optional[dict] = None
+    explanation: Optional[str] = None
+    bloom_level: Optional[str] = None
+    difficulty: Optional[str] = None
+    concept_id: Optional[int] = None
+    unit_id: Optional[int] = None
+    subject_id: int = Field(..., gt=0)
+    co_ids: List[int] = Field(default_factory=list)
+    source_chunk_ids: List[int] = Field(default_factory=list)
+    quality_flags: Optional[dict] = None
+    generator_metadata: Optional[dict] = None
+    status: str = Field(default="pending", description="pending | approved | rejected")
+
+
+class QuestionBankCreate(QuestionBankBase):
+    pass
+
+
+class QuestionBankUpdate(BaseModel):
+    """Teacher edit: only these fields are patchable."""
+    question_text: Optional[str] = None
+    question_type: Optional[str] = None
+    marks: Optional[int] = None
+    options: Optional[List[str]] = None
+    correct_answer: Optional[str] = None
+    answer_key: Optional[dict] = None
+    explanation: Optional[str] = None
+    bloom_level: Optional[str] = None
+    difficulty: Optional[str] = None
+    quality_flags: Optional[dict] = None
+
+
+class QuestionBankResponse(QuestionBankBase):
+    id: int
+    status: str
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class GenerateQuestionsRequest(BaseModel):
+    """Request for concept-centric question generation."""
+    subject_id: int = Field(..., gt=0)
+    unit_id: Optional[int] = Field(None, gt=0)
+    concept_id: Optional[int] = Field(None, gt=0)
+    target: dict = Field(
+        default_factory=lambda: {"mcq": 2, "short": 1, "long": 1},
+        description="e.g. {mcq: 20, short: 10, long: 10}",
+    )
+    constraints: Optional[dict] = Field(None, description="bloom_distribution, difficulty_distribution")
+    dry_run: bool = Field(False, description="If true, generate but do not store")
+

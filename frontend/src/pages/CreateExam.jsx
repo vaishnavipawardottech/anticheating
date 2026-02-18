@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Send, Sparkles, History, Trash2 } from 'lucide-react';
 import './CreateExam.css';
 
@@ -29,6 +30,7 @@ const CreateExam = () => {
   const [generateLoading, setGenerateLoading] = useState(false);
   const [generateError, setGenerateError] = useState(null);
   const [lastExamResult, setLastExamResult] = useState(null);
+  const navigate = useNavigate();
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -103,8 +105,9 @@ const CreateExam = () => {
       setLastExamResult(data);
       setMessages(prev => [...prev,
         { role: 'user', content: `Generate exam: ${counts.mcq} MCQ, ${counts.short} short, ${counts.long} long` },
-        { role: 'assistant', content: `Exam created. Exam ID: ${data.exam_id}, questions generated: ${data.questions_generated}. Seed: ${data.seed}.` }
+        { role: 'assistant', content: `Exam created! ${data.questions_generated} questions generated. Redirecting...` }
       ]);
+      setTimeout(() => navigate(`/exams/${data.exam_id}`), 800);
     } catch (err) {
       setGenerateError(err.message || 'Failed to generate exam.');
       setMessages(prev => [...prev,
