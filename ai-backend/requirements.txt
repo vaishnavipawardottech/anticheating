@@ -56,6 +56,7 @@ numpy
 # LLM Integration
 ollama
 openai>=1.0.0  # Used for Gemini (OpenAI-compatible API)
+json-repair>=0.58.0  # Fix malformed JSON from LLM responses
 
 # Vector Database
 qdrant-client

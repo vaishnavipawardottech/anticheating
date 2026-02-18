@@ -9,6 +9,7 @@ from database.models import (
     Subject, Unit, Concept, AlignedElement,
     Document, ParsedElement, DocumentChunk,
     Exam, Question, QuestionSource,
+    BankQuestion, BankQuestionSource, QuestionGenerationRun, QuestionQualityScore,
 )
 
 def create_tables():
