@@ -240,35 +240,107 @@ def prepare_for_chunking(elements: List[Any]) -> List[_NormElem]:
 
 def compute_section_paths_for_elements(elements: List[Any]) -> List[str]:
     """
-    DISABLED: Section path logic is broken - creates 2500+ char garbage paths.
+    Build section paths with smart heading detection to avoid garbage paths.
     
-    Issue: Unstructured library breaks sentences into fragments marked as "Title".
-    These fragments get added to section path, creating massive corrupted paths.
+    Strategy:
+    1. Only accept headings that are SHORT (<100 chars) - filters out sentence fragments
+    2. Only accept headings matching patterns: "Unit X", "1.1 Title", "Chapter X"
+    3. Max depth of 5 levels to prevent path explosion
+    4. Filter out institutional boilerplate
     
-    Example broken path (2500+ chars):
-    "Human Computer Interaction > large-scale computer system. > Interaction: any communication..."
-    (thousands of chars of body text incorrectly treated as headings)
-    
-    TODO: Re-enable after fixing Unstructured parser or implementing better heading detection.
-    For now, return empty paths for all elements.
+    Example good path: "Unit I > Introduction to HCI > Design Principles"
+    Example rejected: "Human Computer Interaction is the study of..." (too long, doesn't match pattern)
     """
-    # COMMENTED OUT - BROKEN LOGIC
-    # paths: List[str] = []
-    # section_path_parts: List[str] = []
-    # for elem in elements:
-    #     elem_type = getattr(elem, "element_type", "") or ""
-    #     text = (getattr(elem, "text", None) or "").strip()
-    #     if _is_heading_type(elem_type) and text:
-    #         section_path_parts = [t.strip() for t in section_path_parts if t.strip()]
-    #         # Skip institutional boilerplate (college names, departments, etc.)
-    #         if not _is_institutional_boilerplate(text):
-    #             section_path_parts.append(text)
-    #     section_path = " > ".join(section_path_parts) if section_path_parts else ""
-    #     paths.append(section_path)
-    # return paths
+    MAX_HEADING_LENGTH = 100  # Reject headings longer than this
+    MAX_PATH_DEPTH = 5        # Maximum nesting depth
     
-    # Return empty paths for all elements
-    return [""] * len(elements)
+    # Patterns that indicate REAL headings
+    HEADING_PATTERNS = [
+        r"^Unit\s+[IVXLCDM0-9]+",  # "Unit I", "Unit 1"
+        r"^Chapter\s+\d+",          # "Chapter 1"
+        r"^\d+\.?\s+[A-Z]",         # "1. Introduction", "1 Introduction"
+        r"^\d+\.\d+\.?\s+[A-Z]",    # "1.1 Title", "1.1. Title"
+        r"^[A-Z][a-z]+(\s+[A-Z][a-z]+){0,3}$",  # "Introduction", "Design Principles" (1-4 title-case words)
+    ]
+    
+    def _is_valid_heading(text: str, elem_type: str) -> bool:
+        """Check if text is a valid heading (short, matches patterns, not body text)"""
+        if not text or not text.strip():
+            return False
+        text = text.strip()
+        
+        # Must be marked as heading type
+        if not _is_heading_type(elem_type):
+            return False
+        
+        # Reject if too long (body text fragments)
+        if len(text) > MAX_HEADING_LENGTH:
+            return False
+        
+        # Reject if contains multiple sentences (body text)
+        if text.count('.') > 1 or text.count('?') > 1 or text.count('!') > 1:
+            return False
+        
+        # Reject if ends with incomplete sentence indicators
+        if text.endswith((',', ';', ':')) and not text.startswith(('Note:', 'Example:', 'Definition:')):
+            return False
+        
+        # Reject institutional boilerplate
+        if _is_institutional_boilerplate(text):
+            return False
+        
+        # Must match at least one heading pattern
+        for pattern in HEADING_PATTERNS:
+            if re.match(pattern, text):
+                return True
+        
+        # Special case: All capital letters short title (e.g., "INTRODUCTION", "HCI FUNDAMENTALS")
+        if text.isupper() and 3 <= len(text) <= 30 and text.replace(' ', '').isalpha():
+            return True
+        
+        return False
+    
+    paths: List[str] = []
+    section_stack: List[str] = []
+    
+    for elem in elements:
+        elem_type = getattr(elem, "element_type", "") or ""
+        text = (getattr(elem, "text", None) or "").strip()
+        
+        # Check if this is a valid heading
+        if _is_valid_heading(text, elem_type):
+            # Detect heading level based on pattern
+            level = 0
+            if re.match(r"^Unit\s+", text, re.I):
+                level = 0  # Top level
+                section_stack = [text]
+            elif re.match(r"^\d+\.\d+\.\d+", text):
+                level = 3  # Third level (1.1.1)
+            elif re.match(r"^\d+\.\d+", text):
+                level = 2  # Second level (1.1)
+            elif re.match(r"^\d+\.?\s+", text):
+                level = 1  # First level (1.)
+            else:
+                # Generic heading - append to current stack
+                level = len(section_stack)
+            
+            # Update stack based on level
+            if level == 0:
+                section_stack = [text]
+            elif level < len(section_stack):
+                section_stack = section_stack[:level] + [text]
+            else:
+                section_stack.append(text)
+            
+            # Limit stack depth
+            if len(section_stack) > MAX_PATH_DEPTH:
+                section_stack = section_stack[-MAX_PATH_DEPTH:]
+        
+        # Build path from current stack
+        section_path = " > ".join(section_stack) if section_stack else ""
+        paths.append(section_path)
+    
+    return paths
 
 
 def table_to_row_chunks(
@@ -467,12 +539,10 @@ def chunk_elements(
     - Creates chunks with proper 100-char overlap
     - Enforces strict 600-1000 character range
     - Resets page tracking after each chunk
-    - Section paths disabled (set to empty string)
     
-    Result: Consistent 600-1000 char chunks with proper overlap, no garbage paths.
+    Result: Consistent 600-1000 char chunks with proper overlap.
     """
     normalized = prepare_for_chunking(elements)
-    # DISABLED: section_path_parts: List[str] = []  # Section paths commented out - broken logic
     chunks: List[DocumentChunkInfo] = []
     
     # Current chunk being built
@@ -496,8 +566,8 @@ def chunk_elements(
         if len(combined_text) < TARGET_CHUNK_MIN_CHARS:
             return
         
-        # Create chunk with EMPTY section_path (disabled)
-        section_path = ""  # DISABLED: section paths create garbage
+        # Create chunk with section_path
+        section_path = ""
         chunk_text = _enrich_chunk_text(combined_text, section_path)
         
         chunks.append(DocumentChunkInfo(
@@ -546,14 +616,8 @@ def chunk_elements(
         # Skip non-text or trivial content
         if category != "TEXT" or not text or _is_trivial_text(text):
             continue
-
-        # DISABLED: Section path building (was creating garbage)
-        # if _is_structural_heading(text, etype):
-        #     section_path_parts = [t.strip() for t in section_path_parts if t.strip()]
-        #     if not _is_institutional_boilerplate(text):
-        #         section_path_parts.append(text)
         
-        # FIXED: Check size BEFORE adding text (prevent exceeding 1000 max)
+        # Check size before adding text
         current_size = len(" ".join(current_text_parts))
         text_size = len(text)
         
@@ -583,7 +647,7 @@ def chunk_elements(
         
         if len(combined_text) >= TARGET_CHUNK_MIN_CHARS:
             # Large enough for its own chunk
-            section_path = ""  # DISABLED: section paths
+            section_path = ""
             chunk_text = _enrich_chunk_text(combined_text, section_path)
             chunks.append(DocumentChunkInfo(
                 text=chunk_text,

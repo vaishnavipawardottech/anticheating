@@ -1,6 +1,11 @@
 """
-Qdrant Vector Database Manager
+Qdrant Vector Database Manager - Brain Upgrade
 Handles vector storage and retrieval for semantic search
+
+Brain Upgrade Changes:
+- Dimensions: 384 → 1536 (text-embedding-3-small)
+- Added parent_id to chunk payloads for parent-child retrieval
+- Children (chunks) indexed for precision, parents fetched for LLM context
 """
 
 from typing import List, Dict, Optional, Any
@@ -16,15 +21,20 @@ class QdrantManager:
     """
     Manages Qdrant vector database operations.
 
+    Brain Upgrade Architecture:
+    - Collections store "children" (500-token chunks) with 1536-dim embeddings
+    - Each child payload includes parent_id to link to parent_contexts table
+    - Search workflow: Query children → Get parent_ids → Fetch parents from Postgres
+    
     Two collections (one per retrieval unit; same dim = same model):
-    - academic_chunks: main retrieval index (chunk-level embeddings)
+    - academic_chunks: main retrieval index (child chunk-level embeddings)
     - academic_elements: optional element-level index for special cases
     """
 
     COLLECTION_ELEMENTS = "academic_elements"
     COLLECTION_CHUNKS = "academic_chunks"
     COLLECTION_NAME = "academic_elements"  # default/legacy alias for elements
-    EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 dimension
+    EMBEDDING_DIM = 1536  # Brain Upgrade: text-embedding-3-small (was 384)
     CHUNK_ID_OFFSET = 2**31  # Point IDs for chunks: chunk_id + OFFSET (avoids collision with element IDs)
     
     def __init__(
@@ -48,7 +58,7 @@ class QdrantManager:
             port = port or int(os.getenv("QDRANT_PORT", "6333"))
             self.client = QdrantClient(host=host, port=port)
         
-        print(f"✓ Connected to Qdrant at {host}:{port}")
+        print(f"Connected to Qdrant at {host}:{port}")
     
     def _create_collection_if_needed(
         self,
@@ -56,6 +66,10 @@ class QdrantManager:
         recreate: bool = False,
         payload_indexes: list = None,
     ):
+        """
+        Create collection with proper payload indexes for metadata filtering.
+        Brain Upgrade: Ensures hierarchical filtering (subject → unit → concept).
+        """
         collections = self.client.get_collections().collections
         names = [c.name for c in collections]
         if collection_name in names:
@@ -63,8 +77,9 @@ class QdrantManager:
                 self.client.delete_collection(collection_name)
                 print(f"Deleted existing: {collection_name}")
             else:
-                print(f"✓ Collection exists: {collection_name}")
+                print(f"Collection exists: {collection_name}")
                 return
+        
         self.client.create_collection(
             collection_name=collection_name,
             vectors_config=VectorParams(
@@ -72,19 +87,33 @@ class QdrantManager:
                 distance=Distance.COSINE,
             ),
         )
+        
+        # Create payload indexes for filtering
         for field, schema in payload_indexes or []:
-            self.client.create_payload_index(
-                collection_name=collection_name,
-                field_name=field,
-                field_schema=schema,
-            )
-        print(f"✓ Created collection: {collection_name}")
+            try:
+                self.client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name=field,
+                    field_schema=schema,
+                )
+                print(f"  ✓ Created index on {field}")
+            except Exception as e:
+                print(f"  ⚠ Index on {field} failed: {str(e)}")
+        
+        print(f"Created collection: {collection_name}")
 
     def create_collection(self, recreate: bool = False):
         """
         Create academic_elements and academic_chunks collections.
-        One collection per retrieval unit; same dim = same embedding model.
+        Brain Upgrade: Includes comprehensive payload indexes for scoped retrieval.
+        
+        Scoped Retrieval Use Cases:
+        - Search within specific subject (e.g., "OS concepts only")
+        - Filter by unit (e.g., "Memory Management unit")
+        - Target specific concepts (e.g., "Paging, Segmentation")
+        - Document-level search (e.g., "Search in Unit_1.pdf")
         """
+        # Element indexes: document-level + hierarchy
         elem_indexes = [
             ("document_id", "integer"),
             ("subject_id", "integer"),
@@ -93,14 +122,18 @@ class QdrantManager:
             ("unit_id", "integer"),
             ("section_path", "keyword"),
         ]
+        
+        # Chunk indexes: full hierarchy + parent_id (Brain Upgrade)
         chunk_indexes = [
             ("document_id", "integer"),
             ("subject_id", "integer"),
             ("concept_id", "integer"),
             ("unit_id", "integer"),
+            ("parent_id", "integer"),  # Brain Upgrade: link to parent_contexts
             ("section_path", "keyword"),
             ("chunk_type", "keyword"),
         ]
+        
         self._create_collection_if_needed(
             self.COLLECTION_ELEMENTS, recreate=recreate, payload_indexes=elem_indexes
         )
@@ -172,7 +205,7 @@ class QdrantManager:
             points=points
         )
         
-        print(f"✓ Indexed {len(points)} elements to Qdrant")
+        print(f"Indexed {len(points)} elements to Qdrant")
         
         return [str(eid) for eid in element_ids]
     
@@ -184,8 +217,14 @@ class QdrantManager:
     ) -> List[str]:
         """
         Index document chunks with unit/concept/section metadata.
+        Brain Upgrade: Includes parent_id for parent-child retrieval.
+        
         Uses point id = chunk_id + CHUNK_ID_OFFSET. Stores in academic_chunks collection.
-        Metadata should include: subject_id, document_id, unit_id, concept_id, section_path, page_start, page_end.
+        Metadata should include:
+        - subject_id, document_id
+        - unit_id, concept_id (optional)
+        - section_path, page_start, page_end
+        - parent_id (Brain Upgrade - links to parent_contexts table)
         """
         if not (len(chunk_ids) == len(embeddings) == len(metadatas)):
             raise ValueError("chunk_ids, embeddings, and metadatas must have same length")
@@ -193,12 +232,17 @@ class QdrantManager:
             PointStruct(
                 id=chunk_id + self.CHUNK_ID_OFFSET,
                 vector=emb,
-                payload={**meta, "point_type": "chunk", "chunk_id": chunk_id}
+                payload={
+                    **meta,
+                    "point_type": "chunk",
+                    "chunk_id": chunk_id,
+                    "parent_id": meta.get("parent_id")  # Brain Upgrade: link to parent
+                }
             )
             for chunk_id, emb, meta in zip(chunk_ids, embeddings, metadatas)
         ]
         self.client.upsert(collection_name=self.COLLECTION_CHUNKS, points=points)
-        print(f"✓ Indexed {len(points)} chunks to Qdrant")
+        print(f"Indexed {len(points)} chunks to Qdrant")
         return [str(cid) for cid in chunk_ids]
     
     def search(
@@ -308,7 +352,7 @@ class QdrantManager:
                 if not any(c.name == coll_name for c in collections):
                     continue
                 self.client.delete(collection_name=coll_name, points_selector=doc_filter)
-                print(f"✓ Deleted vectors for document {document_id} from {coll_name}")
+                print(f"Deleted vectors for document {document_id} from {coll_name}")
             except Exception as e:
                 if "doesn't exist" in str(e) or "404" in str(e) or "Not found" in str(e):
                     continue

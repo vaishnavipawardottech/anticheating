@@ -196,23 +196,79 @@ class ParsedElement(Base):
         return f"<ParsedElement(id={self.id}, doc_id={self.document_id}, type='{self.element_type}', category='{self.category}')>"
 
 
+class ParentContext(Base):
+    """
+    Parent Context - Large contextual units for LLM answer generation.
+    Brain Upgrade: Stores 2000-4000 token sections/units as rich context.
+    
+    Architecture:
+    - Parents = full sections (stored in Postgres)
+    - Children = 500-token chunks (indexed in Qdrant, linked via parent_id)
+    - Search workflow: Query children → retrieve parent → feed to LLM
+    """
+    __tablename__ = "parent_contexts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    parent_type = Column(String(50), nullable=False)  # 'section', 'unit', 'chapter', 'subsection'
+    parent_index = Column(Integer, nullable=False)  # Order within document (0, 1, 2...)
+    
+    text = Column(Text, nullable=False)  # Full section text (2000-4000 tokens)
+    section_path = Column(Text, nullable=True)  # Section hierarchy
+    page_start = Column(Integer, nullable=True)
+    page_end = Column(Integer, nullable=True)
+    source_element_orders = Column(JSON, default=list, nullable=False)
+    token_count = Column(Integer, nullable=True)
+    
+    # Structure alignment
+    unit_id = Column(Integer, ForeignKey("units.id", ondelete="SET NULL"), nullable=True, index=True)
+    concept_id = Column(Integer, ForeignKey("concepts.id", ondelete="SET NULL"), nullable=True, index=True)
+    alignment_confidence = Column(Float, nullable=True)
+    
+    # Optional: Parent-level embedding (usually we only embed children)
+    embedding_vector = Column(JSON, nullable=True)
+    vector_id = Column(String(100), nullable=True, unique=True)
+    embedding_model = Column(String(100), nullable=True)  # text-embedding-3-small
+    embedding_dim = Column(Integer, nullable=True)  # 1536
+    embedded_at = Column(DateTime(timezone=True), nullable=True)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    
+    # Relationships
+    document = relationship("Document", backref=backref("parent_contexts", cascade="all, delete-orphan"))
+    unit = relationship("Unit", backref="parent_contexts")
+    concept = relationship("Concept", backref="parent_contexts")
+    
+    def __repr__(self):
+        return f"<ParentContext(id={self.id}, doc_id={self.document_id}, type='{self.parent_type}', tokens={self.token_count})>"
+
+
 class DocumentChunk(Base):
     """
-    Section-aware chunk of document content for retrieval and question generation.
-    Built from consecutive TEXT elements; carries section_path and optional unit/concept tags.
+    Child Chunk - Small semantic chunks for precise retrieval.
+    Brain Upgrade: 500-token chunks indexed in Qdrant, linked to parent via parent_id.
+    
+    Architecture:
+    - Children (this table) = 500-token chunks for precision search
+    - Parents (parent_contexts) = 2000-4000 token sections for LLM context
+    - Each child points to parent_id for context retrieval
     """
     __tablename__ = "document_chunks"
 
     id = Column(Integer, primary_key=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     chunk_index = Column(Integer, nullable=False)  # Order of chunk within document
+    
+    # Parent-Child Link (Brain Upgrade)
+    parent_id = Column(Integer, ForeignKey("parent_contexts.id", ondelete="CASCADE"), nullable=True, index=True)
+    child_order = Column(Integer, nullable=True)  # Order within parent (0, 1, 2...)
 
     text = Column(Text, nullable=False)
     section_path = Column(Text, nullable=True)  # Section hierarchy; can be long for deep slide decks
     page_start = Column(Integer, nullable=True)
     page_end = Column(Integer, nullable=True)
     source_element_orders = Column(JSON, default=list, nullable=False)  # List of ParsedElement order_index
-    token_count = Column(Integer, nullable=True)  # Approx tokens for context budgeting
+    token_count = Column(Integer, nullable=True)  # Approx tokens for context budgeting (~500)
     chunk_type = Column(String(30), default="text", nullable=False)  # text, table_row, table_schema
     table_id = Column(Integer, nullable=True)  # element order of source table (for table_row/table_schema)
     row_id = Column(Integer, nullable=True)    # 0-based row index (for table_row only)
@@ -224,18 +280,19 @@ class DocumentChunk(Base):
     embedding_vector = Column(JSON, nullable=True)
     vector_id = Column(String(100), nullable=True, unique=True)
     indexed_at = Column(DateTime(timezone=True), nullable=True)
-    embedding_model = Column(String(100), nullable=True)
-    embedding_dim = Column(Integer, nullable=True)
+    embedding_model = Column(String(100), nullable=True)  # text-embedding-3-small
+    embedding_dim = Column(Integer, nullable=True)  # 1536
     embedded_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     document = relationship("Document", backref=backref("chunks", cascade="all, delete-orphan"))
+    parent = relationship("ParentContext", backref="children")
     unit = relationship("Unit", backref="chunks")
     concept = relationship("Concept", backref="chunks")
 
     def __repr__(self):
-        return f"<DocumentChunk(id={self.id}, doc_id={self.document_id}, chunk_index={self.chunk_index})>"
+        return f"<DocumentChunk(id={self.id}, doc_id={self.document_id}, chunk_index={self.chunk_index}, parent_id={self.parent_id})>"
 
 
 class Exam(Base):

@@ -50,12 +50,12 @@ psycopg2-binary>=2.9.0
 pdfplumber
 
 # Embeddings and Semantic Analysis
-sentence-transformers
+sentence-transformers  # Legacy - keeping for backward compatibility during migration
 numpy
 
 # LLM Integration
 ollama
-openai>=1.0.0  # Used for Gemini (OpenAI-compatible API)
+openai>=1.0.0  # Brain Upgrade: Used for text-embedding-3-small (1536-dim) + Gemini API
 
 # Vector Database
 qdrant-client
