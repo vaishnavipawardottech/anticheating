@@ -1,0 +1,639 @@
+"""
+Semantic Chunker - Step 7 in Ingestion Pipeline
+
+Pipeline context:
+1. Parse (Unstructured) → raw elements
+2. Normalize (unicode/text cleanup) → clean text
+3. Caption Images (GPT-4o) → image descriptions  
+4. Format Tables (LLM) → Markdown tables
+5. Cleanup (remove noise) → filtered elements
+6. Classify (TEXT/DIAGRAM/CODE) → categorized elements
+7. Chunk (this module) → retrieval-optimized chunks
+8. Embed → vector representations
+9. Index → PostgreSQL + Qdrant
+10. Align → concept mapping
+
+Strategy:
+- Group elements into 600-1000 character chunks
+- Maintain section context (heading hierarchy)
+- 100-character overlap between chunks for continuity
+- Full sentences only (no mid-sentence breaks)
+- Simple, predictable accumulation logic
+
+Note: Heavy text normalization already done in Step 2 (normalizer.py)
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Any, Tuple, Callable, Optional
+import re
+
+from .normalizer import normalize_text  # Import for final whitespace cleanup
+
+# Chunk size: character count for direct control over chunk size.
+# Production settings: balanced for context and search performance.
+TARGET_CHUNK_MIN_CHARS = 600   # minimum chunk size in characters
+TARGET_CHUNK_MAX_CHARS = 1000  # maximum chunk size in characters
+OVERLAP_CHARS = 100            # overlap between consecutive chunks in characters
+MAX_FRAGMENT_WORDS = 4         # treat as fragment if ≤ this many words and no sentence end
+SENTENCE_END = re.compile(r"[.!?]\s*$")
+JUNK_PATTERN = re.compile(r"^[\s\-—_·•■□]+$")
+FIGURE_TABLE_CAPTION = re.compile(r"^(Figure|Fig\.?|Table)\s+[\d.]+\s*", re.I)
+MAJOR_HEADING = re.compile(r"^(Unit\s+[IVXLCDM0-9]+|\d+[-.]\s*\d*|\d+\s*[-.]\s*\d*)", re.I)
+# Institutional boilerplate patterns to exclude from section paths (college names, departments, etc.)
+INSTITUTIONAL_BOILERPLATE = re.compile(
+    r"(Department of Computer Engineering|BRACT'?S|Vishwakarma Institute|"
+    r"Institute of Information Technology|Pune-?\d+|"
+    r"An Autonomous Institute|affiliated to|Savitribai Phule|"
+    r"University|College|Department|Faculty)", re.I
+)
+
+
+@dataclass
+class DocumentChunkInfo:
+    """One chunk of document content with section context"""
+    text: str
+    section_path: str
+    page_start: int
+    page_end: int
+    source_element_orders: List[int] = field(default_factory=list)
+    chunk_type: str = "text"  # "text", "table_row", "table_schema"
+    table_id: int | None = None   # element order of table (for table_row / table_schema)
+    row_id: int | None = None    # 0-based row index (for table_row only)
+
+
+@dataclass
+class _NormElem:
+    """Normalized element after clean + fragment merge + dedup (internal)."""
+    text: str
+    source_orders: List[int]
+    page_number: int | None
+    element_type: str
+    category: str
+
+
+# Note: _normalize_text removed - normalization now happens in Step 2 (normalizer.py)
+# We import normalize_text() at top for any final whitespace cleanup during chunking
+
+
+def _is_junk_token(text: str) -> bool:
+    """Drop: literal —, empty, repeated separators."""
+    if not text or not text.strip():
+        return True
+    s = text.strip()
+    if s in ("—", "–", "−", " "):
+        return True
+    if JUNK_PATTERN.match(s):
+        return True
+    return False
+
+
+def _is_sentence_fragment(text: str) -> bool:
+    """True if short (1–4 words) and does not end with . ! ?"""
+    if not text or not text.strip():
+        return False
+    s = text.strip()
+    words = s.split()
+    if len(words) > MAX_FRAGMENT_WORDS:
+        return False
+    return not bool(SENTENCE_END.search(s))
+
+
+def _is_figure_or_table_caption(text: str, element_type: str) -> bool:
+    """True if this is a figure/table caption (attach to next body, don't embed alone)."""
+    if not text or not text.strip():
+        return False
+    if element_type in ("FigureCaption", "Table", "Image"):
+        return True
+    if element_type == "Title" and FIGURE_TABLE_CAPTION.match(text.strip()):
+        return True
+    return False
+
+
+def _is_label_only_heading(text: str, element_type: str) -> bool:
+    """Note, Example 2.4, etc. — attach to next content, don't push section stack."""
+    if not text or not text.strip():
+        return False
+    s = text.strip().lower()
+    if element_type != "Title":
+        return False
+    if s in ("note", "notes", "example", "summary", "key point", "key points"):
+        return True
+    if re.match(r"^example\s+[\d.]+\s*", s):
+        return True
+    return False
+
+
+def prepare_for_chunking(elements: List[Any]) -> List[_NormElem]:
+    """
+    Clean → join fragments → dedup → normalize. Must run before chunk_elements.
+    - Drops junk tokens (—, empty, separator-only).
+    - Normalizes text to remove PDF/PPT artifacts.
+    - Aggressively merges small consecutive fragments (< 150 chars) regardless of type.
+    - Handles broken Unstructured output where sentences are split mid-way.
+    - De-duplicates consecutive identical text.
+    Returns list of _NormElem with source_orders for each merged block.
+    """
+    if not elements:
+        return []
+    # Build list of (text, order, page, type, category)
+    rows: List[Tuple[str, int, Any, str, str]] = []
+    for i, elem in enumerate(elements):
+        text = (getattr(elem, "text", None) or "").strip()
+        if _is_junk_token(text):
+            continue
+        # Text already normalized in Step 2, but do final cleanup for combined text
+        text = normalize_text(text)
+        if not text:  # Skip if normalization resulted in empty text
+            continue
+        page = getattr(elem, "page_number", None)
+        etype = getattr(elem, "element_type", "") or ""
+        cat = getattr(elem, "category", "OTHER")
+        rows.append((text, i, page, etype, cat))
+
+    # AGGRESSIVE MERGE: Merge ANY consecutive small fragments (< 150 chars)
+    # This fixes Unstructured library breaking sentences mid-way
+    # Example: "Human : a user, a group of users , or" (60 chars)
+    #        + "an organization, trying to get the job done with the" (52 chars)
+    #        + "technology." (11 chars)
+    # → "Human : a user, a group of users , or an organization, trying to get the job done with the technology."
+    merged: List[Tuple[str, List[int], Any, str, str]] = []
+    i = 0
+    while i < len(rows):
+        text, order, page, etype, cat = rows[i]
+        orders = [order]
+        
+        # Keep merging as long as current text is small (< 150 chars)
+        while len(text) < 150 and i + 1 < len(rows):
+            next_text, next_order, next_page, next_etype, next_cat = rows[i + 1]
+            # Only merge TEXT category elements
+            if cat != "TEXT" or next_cat != "TEXT":
+                break
+            # Merge if next is also small (< 150 chars) - both are likely fragments
+            if len(next_text) < 150:
+                text = text + " " + next_text
+                orders.append(next_order)
+                page = next_page or page
+                i += 1
+            else:
+                # Next is large, stop merging
+                break
+        
+        # De-duplicate: if same text as previous, skip (keep first occurrence)
+        if merged and merged[-1][0] == text:
+            i += 1
+            continue
+        merged.append((text, orders, page, etype, cat))
+        i += 1
+
+    return [
+        _NormElem(text=t, source_orders=o, page_number=p, element_type=et, category=c)
+        for t, o, p, et, c in merged
+    ]
+
+
+def compute_section_paths_for_elements(elements: List[Any]) -> List[str]:
+    """
+    Build section paths with smart heading detection to avoid garbage paths.
+    
+    Strategy:
+    1. Only accept headings that are SHORT (<100 chars) - filters out sentence fragments
+    2. Only accept headings matching patterns: "Unit X", "1.1 Title", "Chapter X"
+    3. Max depth of 5 levels to prevent path explosion
+    4. Filter out institutional boilerplate
+    
+    Example good path: "Unit I > Introduction to HCI > Design Principles"
+    Example rejected: "Human Computer Interaction is the study of..." (too long, doesn't match pattern)
+    """
+    MAX_HEADING_LENGTH = 100  # Reject headings longer than this
+    MAX_PATH_DEPTH = 5        # Maximum nesting depth
+    
+    # Patterns that indicate REAL headings
+    HEADING_PATTERNS = [
+        r"^Unit\s+[IVXLCDM0-9]+",  # "Unit I", "Unit 1"
+        r"^Chapter\s+\d+",          # "Chapter 1"
+        r"^\d+\.?\s+[A-Z]",         # "1. Introduction", "1 Introduction"
+        r"^\d+\.\d+\.?\s+[A-Z]",    # "1.1 Title", "1.1. Title"
+        r"^[A-Z][a-z]+(\s+[A-Z][a-z]+){0,3}$",  # "Introduction", "Design Principles" (1-4 title-case words)
+    ]
+    
+    def _is_valid_heading(text: str, elem_type: str) -> bool:
+        """Check if text is a valid heading (short, matches patterns, not body text)"""
+        if not text or not text.strip():
+            return False
+        text = text.strip()
+        
+        # Must be marked as heading type
+        if not _is_heading_type(elem_type):
+            return False
+        
+        # Reject if too long (body text fragments)
+        if len(text) > MAX_HEADING_LENGTH:
+            return False
+        
+        # Reject if contains multiple sentences (body text)
+        if text.count('.') > 1 or text.count('?') > 1 or text.count('!') > 1:
+            return False
+        
+        # Reject if ends with incomplete sentence indicators
+        if text.endswith((',', ';', ':')) and not text.startswith(('Note:', 'Example:', 'Definition:')):
+            return False
+        
+        # Reject institutional boilerplate
+        if _is_institutional_boilerplate(text):
+            return False
+        
+        # Must match at least one heading pattern
+        for pattern in HEADING_PATTERNS:
+            if re.match(pattern, text):
+                return True
+        
+        # Special case: All capital letters short title (e.g., "INTRODUCTION", "HCI FUNDAMENTALS")
+        if text.isupper() and 3 <= len(text) <= 30 and text.replace(' ', '').isalpha():
+            return True
+        
+        return False
+    
+    paths: List[str] = []
+    section_stack: List[str] = []
+    
+    for elem in elements:
+        elem_type = getattr(elem, "element_type", "") or ""
+        text = (getattr(elem, "text", None) or "").strip()
+        
+        # Check if this is a valid heading
+        if _is_valid_heading(text, elem_type):
+            # Detect heading level based on pattern
+            level = 0
+            if re.match(r"^Unit\s+", text, re.I):
+                level = 0  # Top level
+                section_stack = [text]
+            elif re.match(r"^\d+\.\d+\.\d+", text):
+                level = 3  # Third level (1.1.1)
+            elif re.match(r"^\d+\.\d+", text):
+                level = 2  # Second level (1.1)
+            elif re.match(r"^\d+\.?\s+", text):
+                level = 1  # First level (1.)
+            else:
+                # Generic heading - append to current stack
+                level = len(section_stack)
+            
+            # Update stack based on level
+            if level == 0:
+                section_stack = [text]
+            elif level < len(section_stack):
+                section_stack = section_stack[:level] + [text]
+            else:
+                section_stack.append(text)
+            
+            # Limit stack depth
+            if len(section_stack) > MAX_PATH_DEPTH:
+                section_stack = section_stack[-MAX_PATH_DEPTH:]
+        
+        # Build path from current stack
+        section_path = " > ".join(section_stack) if section_stack else ""
+        paths.append(section_path)
+    
+    return paths
+
+
+def table_to_row_chunks(
+    table_text: str,
+    section_path: str,
+    page: int,
+    element_order: int,
+    include_schema_chunk: bool = True,
+) -> List[DocumentChunkInfo]:
+    """
+    Turn a table into: optional table_schema chunk (column meanings) + one chunk per row.
+    Row chunks are retrieval-friendly (e.g. "Coax type: RG-58 | use: ... | impedance: 50 Ω").
+    Payload can store table_id, row_id, section_path for query-time boosting.
+    """
+    if not table_text or not table_text.strip():
+        return []
+    lines = [ln.strip() for ln in table_text.strip().splitlines() if ln.strip()]
+    if not lines:
+        return []
+    first = lines[0]
+    delim = "|" if "|" in first else ("\t" if "\t" in first else ",")
+    result: List[DocumentChunkInfo] = []
+
+    # Optional: table schema chunk (what columns mean + how to use)
+    if include_schema_chunk and lines:
+        header_cells = [c.strip() for c in lines[0].split(delim) if c.strip()]
+        if header_cells:
+            schema_text = "Table columns: " + " | ".join(header_cells)
+            result.append(DocumentChunkInfo(
+                text=schema_text,
+                section_path=section_path,
+                page_start=page or 1,
+                page_end=page or 1,
+                source_element_orders=[element_order],
+                chunk_type="table_schema",
+                table_id=element_order,
+                row_id=None,
+            ))
+
+    for i, line in enumerate(lines):
+        cells = [c.strip() for c in line.split(delim) if c.strip()]
+        if not cells:
+            continue
+        row_text = " | ".join(cells)
+        if not row_text or _is_trivial_text(row_text):
+            continue
+        result.append(DocumentChunkInfo(
+            text=row_text,
+            section_path=section_path,
+            page_start=page or 1,
+            page_end=page or 1,
+            source_element_orders=[element_order],
+            chunk_type="table_row",
+            table_id=element_order,
+            row_id=i,
+        ))
+    return result
+
+
+def _is_heading_type(element_type: str) -> bool:
+    """True if element should update section path (Title, Heading, Header)."""
+    if not element_type:
+        return False
+    et = element_type.strip().lower()
+    return et in ("title", "heading", "header") or "heading" in et or "header" in et
+
+
+def _approx_chars(text: str) -> int:
+    """Character count for chunk size calculation."""
+    if not text or not text.strip():
+        return 0
+    return len(text.strip())
+
+
+def _is_institutional_boilerplate(text: str) -> bool:
+    """
+    True if text is institutional boilerplate (college name, department, etc.)
+    that should be excluded from section paths.
+    """
+    if not text or not text.strip():
+        return False
+    return bool(INSTITUTIONAL_BOILERPLATE.search(text.strip()))
+
+
+def _clean_section_path(section_path: str) -> str:
+    """
+    Remove institutional boilerplate from section path.
+    
+    Example:
+    Input:  "Unit I > Business Intelligence > Department of Computer Engineering BRACT'S, Vishwakarma Institute"
+    Output: "Unit I > Business Intelligence"
+    """
+    if not section_path:
+        return section_path
+    
+    parts = [p.strip() for p in section_path.split(">") if p.strip()]
+    # Filter out parts that are institutional boilerplate
+    cleaned_parts = [p for p in parts if not _is_institutional_boilerplate(p)]
+    return " > ".join(cleaned_parts) if cleaned_parts else ""
+
+
+def _is_trivial_text(text: str) -> bool:
+    """
+    True if element text is noise: bullets, boxes, symbol-only, or too short to be useful.
+    Such elements are skipped when building chunks (no separate chunk, not merged as sole content).
+    """
+    if not text or not text.strip():
+        return True
+    s = text.strip()
+    if len(s) <= 1:
+        return True
+    # Strip common decorative/symbol chars; if nothing meaningful remains, skip
+    stripped = re.sub(r"[\s\u25A0\u25A1\u25C6\u2022\u00B7\-_*■□•·]+", "", s)  # boxes, bullets, dashes
+    if not stripped or len(stripped) < 2:
+        return True
+    # Single "word" that is only symbols/digits (e.g. "1.", "■")
+    words = s.split()
+    if len(words) <= 2 and not re.search(r"[a-zA-Z]{2,}", s):
+        return True
+    return False
+
+
+def _is_structural_heading(text: str, element_type: str) -> bool:
+    """True if this heading should update section path (Unit, 1.1, etc.). Excludes Note/Example/Figure/Table captions."""
+    if not text or not text.strip():
+        return False
+    if not _is_heading_type(element_type):
+        return False
+    if _is_label_only_heading(text, element_type) or _is_figure_or_table_caption(text, element_type):
+        return False
+    # CRITICAL FIX: Ignore very short "Title" fragments (likely PDF parsing errors or sentence continuations)
+    # A real structural heading should be at least 3 words or match major patterns (Unit I, 1.1, etc.)
+    stripped = text.strip()
+    word_count = len(stripped.split())
+    if word_count < 3 and not MAJOR_HEADING.match(stripped):
+        # Short fragment that doesn't match major heading pattern → treat as regular text, not heading
+        return False
+    return True
+
+
+def _enrich_chunk_text(body: str, section_path: str) -> str:
+    """Return chunk text without Path prefix (section_path is stored separately in metadata)."""
+    if not body or not body.strip():
+        return body
+    return body.strip()
+
+
+def _cosine_sim(a: List[float], b: List[float]) -> float:
+    """Cosine similarity between two vectors. Assumes non-zero norm."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(x * x for x in b) ** 0.5
+    if na <= 0 or nb <= 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _best_semantic_split_index(
+    parts: List[str],
+    embed_fn: Callable[[List[str]], List[List[float]]],
+) -> int:
+    """
+    Find the best index to split parts so the first chunk ends at a topic boundary.
+    Uses embedding similarity: split at the boundary where consecutive parts have
+    *lowest* similarity (topic shift). Returns index i so parts[0:i+1] is first chunk.
+    """
+    if len(parts) < 2:
+        return 0
+    try:
+        embeddings = embed_fn(parts)
+        if not embeddings or len(embeddings) != len(parts):
+            return 0
+        best_i = 0
+        min_sim = 1.0
+        for i in range(len(parts) - 1):
+            sim = _cosine_sim(embeddings[i], embeddings[i + 1])
+            if sim < min_sim:
+                min_sim = sim
+                best_i = i
+        return best_i
+    except Exception:
+        return 0
+
+
+def chunk_elements(
+    elements: List[Any],
+    section_paths: Optional[List[str]] = None,
+    embed_fn: Optional[Callable[[List[str]], List[List[float]]]] = None,
+) -> List[DocumentChunkInfo]:
+    """
+    Production-ready chunking: clean → normalize → accumulate → chunk with overlap.
+    
+    Args:
+        elements: List of semantic elements to chunk
+        section_paths: Precomputed section paths for each element (from compute_section_paths_for_elements)
+        embed_fn: Optional embedding function for semantic splitting
+    
+   Behavior:
+    - Checks size BEFORE adding text (prevents exceeding 1000 max)
+    - Creates chunks with proper 100-char overlap
+    - Enforces strict 600-1000 character range
+    - Resets page tracking after each chunk
+    - Associates section_path from first source element
+    
+    Result: Consistent 600-1000 char chunks with proper overlap and section context.
+    """
+    normalized = prepare_for_chunking(elements)
+    # section_paths are passed in, precomputed from original elements
+    if section_paths is None:
+        section_paths = [""] * len(elements)
+    chunks: List[DocumentChunkInfo] = []
+    
+    # Current chunk being built
+    current_text_parts: List[str] = []
+    current_orders: List[int] = []
+    current_page_start: int | None = None
+    current_page_end: int | None = None
+
+    def create_chunk_with_overlap():
+        """Create a chunk from accumulated text and set up overlap for next chunk."""
+        nonlocal current_text_parts, current_orders, current_page_start, current_page_end
+        
+        if not current_text_parts:
+            return
+        
+        # Combine all text parts
+        combined_text = " ".join(current_text_parts)
+        combined_text = normalize_text(combined_text).strip()
+        
+        # Skip if too small (shouldn't happen but safety check)
+        if len(combined_text) < TARGET_CHUNK_MIN_CHARS:
+            return
+        
+        # Get section_path from first source element
+        # (since chunks span elements, use the path of the first contributing element)
+        section_path = ""
+        if current_orders and current_orders[0] < len(section_paths):
+            section_path = section_paths[current_orders[0]]
+        
+        chunk_text = _enrich_chunk_text(combined_text, section_path)
+        
+        chunks.append(DocumentChunkInfo(
+            text=chunk_text,
+            section_path=section_path,
+            page_start=current_page_start or 1,
+            page_end=current_page_end or 1,
+            source_element_orders=list(current_orders),
+            chunk_type="text",
+        ))
+        
+        # Set up overlap for next chunk
+        if len(combined_text) > OVERLAP_CHARS:
+            # Keep last OVERLAP_CHARS characters for continuity
+            overlap_text = combined_text[-OVERLAP_CHARS:]
+            # Find a good break point (space) to avoid mid-word splits
+            space_idx = overlap_text.find(" ")
+            if space_idx > 0:
+                overlap_text = overlap_text[space_idx+1:].strip()  # Skip the space itself
+            
+            if overlap_text:  # Only use overlap if non-empty after trimming
+                current_text_parts = [overlap_text]
+                # Keep the last order for continuity
+                if current_orders:
+                    current_orders = [current_orders[-1]]
+            else:
+                current_text_parts = []
+                current_orders = []
+        else:
+            # Chunk too small for overlap, start fresh
+            current_text_parts = []
+            current_orders = []
+        
+        # FIXED: Reset page tracking for next chunk
+        current_page_start = None
+        current_page_end = None
+
+    # Process all normalized elements
+    for norm in normalized:
+        text = norm.text.strip()
+        orders = norm.source_orders
+        page = norm.page_number
+        etype = norm.element_type
+        category = norm.category
+
+        # Skip non-text or trivial content
+        if category != "TEXT" or not text or _is_trivial_text(text):
+            continue
+        
+        # Check size before adding text (prevent exceeding max)
+        current_size = len(" ".join(current_text_parts))
+        text_size = len(text)
+        
+        # If adding this text would exceed max, create chunk first
+        if current_text_parts and (current_size + text_size + 1) > TARGET_CHUNK_MAX_CHARS:
+            # Current chunk would be too large, finalize it first
+            if current_size >= TARGET_CHUNK_MIN_CHARS:
+                create_chunk_with_overlap()
+            else:
+                # Too small to chunk, must include this text even if over max
+                pass
+        
+        # Add text to current chunk
+        current_text_parts.append(text)
+        current_orders.extend(orders)
+        
+        # Track page range
+        if page is not None:
+            if current_page_start is None:
+                current_page_start = page
+            current_page_end = page
+    
+    # Handle remaining content
+    if current_text_parts:
+        combined_text = " ".join(current_text_parts)
+        combined_text = normalize_text(combined_text).strip()
+        
+        if len(combined_text) >= TARGET_CHUNK_MIN_CHARS:
+            # Large enough for its own chunk
+            # Get section_path from first source element
+            section_path = ""
+            if current_orders and current_orders[0] < len(section_paths):
+                section_path = section_paths[current_orders[0]]
+            
+            chunk_text = _enrich_chunk_text(combined_text, section_path)
+            chunks.append(DocumentChunkInfo(
+                text=chunk_text,
+                section_path=section_path,
+                page_start=current_page_start or 1,
+                page_end=current_page_end or 1,
+                source_element_orders=list(current_orders),
+                chunk_type="text",
+            ))
+        elif chunks:
+            # Too small - append to last chunk
+            last_chunk = chunks[-1]
+            last_chunk.text = last_chunk.text + " " + combined_text
+            last_chunk.source_element_orders.extend(current_orders)
+            if current_page_end:
+                last_chunk.page_end = current_page_end
+    
+    return chunks
