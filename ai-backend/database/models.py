@@ -9,6 +9,8 @@ NO document references, NO embeddings, NO vectors here.
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, Float, JSON
 from sqlalchemy.orm import relationship, backref
 from sqlalchemy.sql import func
+from sqlalchemy.dialects.postgresql import UUID, TSVECTOR
+import uuid
 from database.database import Base
 
 
@@ -256,9 +258,10 @@ class DocumentChunk(Base):
     __tablename__ = "document_chunks"
 
     id = Column(Integer, primary_key=True, index=True)
+    chunk_uuid = Column(UUID(as_uuid=True), default=uuid.uuid4, unique=True, nullable=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     chunk_index = Column(Integer, nullable=False)  # Order of chunk within document
-    
+
     # Parent-Child Link (Brain Upgrade)
     parent_id = Column(Integer, ForeignKey("parent_contexts.id", ondelete="CASCADE"), nullable=True, index=True)
     child_order = Column(Integer, nullable=True)  # Order within parent (0, 1, 2...)
@@ -272,6 +275,36 @@ class DocumentChunk(Base):
     chunk_type = Column(String(30), default="text", nullable=False)  # text, table_row, table_schema
     table_id = Column(Integer, nullable=True)  # element order of source table (for table_row/table_schema)
     row_id = Column(Integer, nullable=True)    # 0-based row index (for table_row only)
+
+    # ─── Step 7: LLM Academic Classification ─────────────────────────────────
+    # section_type: what kind of academic content this chunk contains
+    section_type = Column(String(30), nullable=True, index=True)
+    # values: definition | example | derivation | exercise | explanation | summary
+
+    # source_type: what kind of source material this chunk comes from
+    source_type = Column(String(30), nullable=True, index=True)
+    # values: syllabus | lecture_note | textbook | slide
+
+    # Bloom's Taxonomy level (keyword + integer for filtering)
+    blooms_level = Column(String(20), nullable=True, index=True)
+    # values: remember | understand | apply | analyze | evaluate | create
+    blooms_level_int = Column(Integer, nullable=True, index=True)
+    # values: 1=remember, 2=understand, 3=apply, 4=analyze, 5=evaluate, 6=create
+
+    # Difficulty classification
+    difficulty = Column(String(10), nullable=True, index=True)
+    # values: easy | medium | hard
+    difficulty_score = Column(Float, nullable=True)
+    # 0.0 (trivial) → 1.0 (very hard)
+
+    # Usage tracking: how many times this chunk has been used for question generation
+    usage_count = Column(Integer, default=0, nullable=False, server_default="0")
+
+    # ─── Step 8: BM25 Full-Text Search ───────────────────────────────────────
+    # Populated automatically by DB trigger (see migration add_chunk_search_vector.py)
+    # Declared here for ORM awareness; do NOT write to this column manually.
+    search_vector = Column(TSVECTOR, nullable=True)
+    # ─────────────────────────────────────────────────────────────────────────
 
     unit_id = Column(Integer, ForeignKey("units.id", ondelete="SET NULL"), nullable=True, index=True)
     concept_id = Column(Integer, ForeignKey("concepts.id", ondelete="SET NULL"), nullable=True, index=True)
