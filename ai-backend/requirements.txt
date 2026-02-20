@@ -48,6 +48,7 @@ psycopg2-binary>=2.9.0
 
 # PDF Processing
 pdfplumber
+reportlab>=4.0.0  # PDF generation for exam papers
 
 # Embeddings and Semantic Analysis
 sentence-transformers  # Legacy - keeping for backward compatibility during migration

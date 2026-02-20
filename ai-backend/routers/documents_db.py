@@ -31,6 +31,7 @@ from ingestion.cleanup import cleanup_elements
 from ingestion.classifier import ElementClassifier
 from ingestion.chunker import chunk_elements, compute_section_paths_for_elements, table_to_row_chunks
 from ingestion.schemas import SemanticElement
+from ingestion.academic_classifier import classify_chunks
 
 from database.database import get_db
 from database.models import Document, ParsedElement, DocumentChunk, Concept, Unit
@@ -262,7 +263,7 @@ async def upload_and_store_document(
         # Step 6b: Section paths for metadata (heading stack → section_path)
         section_paths = compute_section_paths_for_elements(cleaned_elements)
 
-        # Step 7: Semantic chunking (600-1000 chars, 100 overlap)
+        # Step 5: Semantic chunking (600-1000 chars, 100 overlap)
         try:
             emb_gen = get_embedding_generator()
             embed_fn = emb_gen.generate_embeddings_batch
@@ -275,7 +276,24 @@ async def upload_and_store_document(
                 page = getattr(element, "page_number", None) or 1
                 doc_chunks.extend(table_to_row_chunks(element.text, path, page, idx))
         doc_chunks.sort(key=lambda c: (c.page_start or 0, c.source_element_orders[0] if c.source_element_orders else 0))
-        print(f"   Step 7: Chunking - {len(doc_chunks)} chunks from {len(cleaned_elements)} elements")
+        print(f"   Step 5→6→7: Chunking → {len(doc_chunks)} chunks from {len(cleaned_elements)} elements")
+
+        # Step 7: LLM Academic Classification (Bloom's, difficulty, section_type, source_type)
+        chunk_classifications = []
+        try:
+            chunk_texts_for_classify = [c.text or "" for c in doc_chunks]
+            # Determine category per chunk: table_row/table_schema → TABLE, else TEXT
+            chunk_cats = [
+                "TABLE" if getattr(c, "chunk_type", "text") in ("table_row", "table_schema") else "TEXT"
+                for c in doc_chunks
+            ]
+            chunk_classifications = await classify_chunks(chunk_texts_for_classify, chunk_cats)
+            print(f"   Step 7: Academic classification complete for {len(chunk_classifications)} chunks")
+        except Exception as classify_err:
+            print(f"   Step 7: Academic classification failed — {classify_err}")
+            print(f"   Continuing with default classifications...")
+            from ingestion.academic_classifier import _default_classification
+            chunk_classifications = [_default_classification() for _ in doc_chunks]
         
         # Step 8: Generate embeddings for TEXT elements
         document.status = "embedding"
@@ -398,7 +416,7 @@ async def upload_and_store_document(
                 print(f"   Qdrant indexing failed: {str(e)}")
                 print(f"   Continuing without vector indexing (embeddings saved in DB)...")
         
-        # 9b. Save and index chunks (section-aware retrieval)
+        # Step 10: Save chunks to Postgres (primary structured store)
         if doc_chunks:
             for chunk_index, cinfo in enumerate(doc_chunks):
                 # section_path can be very long in slide decks; truncate so VARCHAR(500) never exceeded
@@ -406,6 +424,10 @@ async def upload_and_store_document(
                 if sp and len(sp) > MAX_SECTION_PATH_LEN:
                     sp = sp[: MAX_SECTION_PATH_LEN - 3] + "..."
                 token_count = int(len((cinfo.text or "").split()) * 1.3)
+
+                # Attach Step 7 classification results (safe - defaults already set)
+                clf = chunk_classifications[chunk_index] if chunk_index < len(chunk_classifications) else None
+
                 db_chunk = DocumentChunk(
                     document_id=document.id,
                     chunk_index=chunk_index,
@@ -420,6 +442,15 @@ async def upload_and_store_document(
                     row_id=getattr(cinfo, "row_id", None),
                     unit_id=None,
                     concept_id=None,
+                    # ── Step 7: Academic Classification ──
+                    section_type=clf.section_type if clf else None,
+                    source_type=clf.source_type if clf else None,
+                    blooms_level=clf.blooms_level if clf else None,
+                    blooms_level_int=clf.blooms_level_int if clf else None,
+                    difficulty=clf.difficulty if clf else None,
+                    difficulty_score=clf.difficulty_score if clf else None,
+                    usage_count=0,
+                    # search_vector is auto-set by the DB trigger
                 )
                 db.add(db_chunk)
             db.commit()
@@ -456,6 +487,13 @@ async def upload_and_store_document(
                         "page_end": c.page_end or 0,
                         "point_type": "chunk",
                         "chunk_type": getattr(c, "chunk_type", "text") or "text",
+                        # ── Step 11: Academic classification in Qdrant payload ──
+                        "blooms_level_int": c.blooms_level_int or 2,
+                        "difficulty": c.difficulty or "medium",
+                        "section_type": c.section_type or "explanation",
+                        "source_type": c.source_type or "textbook",
+                        "usage_count": c.usage_count or 0,
+                        "chunk_id": c.id,
                     }
                     if getattr(c, "table_id", None) is not None:
                         meta["table_id"] = c.table_id
@@ -880,3 +918,47 @@ def delete_document(document_id: int, db: Session = Depends(get_db)):
     db.commit()
     
     return {"message": f"Document {document_id} deleted successfully"}
+
+
+# ─── Usage Tracking ────────────────────────────────────────────────────────────
+
+@router.post("/chunks/{chunk_id}/increment-usage")
+def increment_chunk_usage(chunk_id: int, db: Session = Depends(get_db)):
+    """
+    Increment the usage_count for a chunk (called after using a chunk for Q-gen).
+
+    Atomically increments in Postgres, then syncs the updated value to
+    the Qdrant payload so filtered retrieval (max_usage_count) stays accurate.
+    """
+    chunk = db.query(DocumentChunk).filter(DocumentChunk.id == chunk_id).first()
+    if not chunk:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chunk {chunk_id} not found"
+        )
+
+    # Atomic increment in Postgres
+    chunk.usage_count = (chunk.usage_count or 0) + 1
+    db.commit()
+    db.refresh(chunk)
+    new_count = chunk.usage_count
+
+    # Sync to Qdrant payload (non-blocking — failure is logged but not raised)
+    try:
+        if chunk.vector_id:
+            qdrant = get_qdrant_manager()
+            # Extract numeric id from "chunk_1234" format
+            numeric_id = int(chunk.vector_id.replace("chunk_", ""))
+            qdrant.client.set_payload(
+                collection_name=qdrant.COLLECTION_CHUNKS,
+                payload={"usage_count": new_count},
+                points=[numeric_id],
+            )
+    except Exception as e:
+        print(f"   [usage_count] Qdrant sync failed for chunk {chunk_id}: {e}")
+
+    return {
+        "chunk_id": chunk_id,
+        "usage_count": new_count,
+        "message": "Usage count incremented"
+    }

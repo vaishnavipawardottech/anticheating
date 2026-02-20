@@ -125,15 +125,21 @@ class QdrantManager:
             ("section_path", "keyword"),
         ]
         
-        # Chunk indexes: full hierarchy + parent_id (Brain Upgrade)
+        # Chunk indexes: full hierarchy + parent_id + academic classification
         chunk_indexes = [
             ("document_id", "integer"),
             ("subject_id", "integer"),
             ("concept_id", "integer"),
             ("unit_id", "integer"),
-            ("parent_id", "integer"),  # Brain Upgrade: link to parent_contexts
+            ("parent_id", "integer"),       # Brain Upgrade: link to parent_contexts
             ("section_path", "keyword"),
             ("chunk_type", "keyword"),
+            # Step 7: Academic classification indexes (for Bloom/difficulty filtered retrieval)
+            ("blooms_level_int", "integer"),   # 1-6 numeric for range filters
+            ("difficulty", "keyword"),          # easy|medium|hard
+            ("section_type", "keyword"),        # definition|example|exercise|...
+            ("source_type", "keyword"),         # textbook|slide|lecture_note|syllabus
+            ("usage_count", "integer"),         # exposure tracking
         ]
         
         self._create_collection_if_needed(
@@ -340,7 +346,7 @@ class QdrantManager:
         unit_id: Optional[int] = None,
         concept_ids: Optional[List[int]] = None,
         section_path: Optional[str] = None,
-        score_threshold: float = 0.5,
+        score_threshold: float = 0.2,
         search_chunks: bool = True,
         search_elements: bool = False,
     ) -> List[Dict[str, Any]]:

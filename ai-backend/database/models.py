@@ -456,3 +456,29 @@ class QuestionQualityScore(Base):
     validator_model = Column(String(100), nullable=True)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+# ==========================================
+# LAYER 4: GENERATED PAPERS (pattern-based pipeline)
+# ==========================================
+
+class GeneratedPaper(Base):
+    """
+    A complete generated question paper produced by the pattern-based pipeline.
+    Stores the full paper JSON, plus metadata for listing and retrieval.
+    """
+    __tablename__ = "generated_papers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    subject_id = Column(Integer, ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False, index=True)
+    pattern_text = Column(Text, nullable=True)   # Raw pattern text (or PDF reference)
+    total_marks = Column(Integer, nullable=False)
+    paper_json = Column(JSON, nullable=False)     # Full PaperOutput serialised
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    finalised = Column(Boolean, default=False, nullable=False, server_default="false")
+
+    subject = relationship("Subject", backref="generated_papers")
+
+    def __repr__(self):
+        return f"<GeneratedPaper(id={self.id}, subject_id={self.subject_id}, marks={self.total_marks})>"
