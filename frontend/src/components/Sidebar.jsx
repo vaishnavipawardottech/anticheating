@@ -16,15 +16,18 @@ import {
   FileInput,
   ClipboardList,
   LogOut,
-  BookOpen,
   Upload,
-  Database
+  Database,
+  Zap,
+  ScrollText,
+  FileSearch,
+  Library,
+  Sparkles
 } from 'lucide-react';
 import './Sidebar.css';
 
 const Sidebar = () => {
   const [openMenus, setOpenMenus] = useState({});
-  const [isHovered, setIsHovered] = useState(false);
 
   const toggleSubmenu = (menuKey) => {
     setOpenMenus(prev => ({
@@ -33,12 +36,7 @@ const Sidebar = () => {
     }));
   };
 
-  const handleMouseEnter = () => {
-    setIsHovered(true);
-  };
-
   const handleMouseLeave = () => {
-    setIsHovered(false);
     setOpenMenus({});
   };
 
@@ -50,9 +48,28 @@ const Sidebar = () => {
       path: '/'
     },
     {
+      key: 'subjects',
+      icon: <Library size={20} />,
+      text: 'Subjects',
+      submenu: [
+        { icon: <List size={18} />, text: 'All Subjects', path: '/subjects' },
+        { icon: <Upload size={18} />, text: 'Ingest Document', path: '/ingest' },
+        { icon: <Database size={18} />, text: 'View Embeddings', path: '/vectors' },
+      ]
+    },
+    {
+      key: 'papers',
+      icon: <ScrollText size={20} />,
+      text: 'Question Papers',
+      submenu: [
+        { icon: <Sparkles size={18} />, text: 'Generate Exam', path: '/generate-nl' },
+        { icon: <FileSearch size={18} />, text: 'All Papers', path: '/papers' },
+      ]
+    },
+    {
       key: 'exams',
       icon: <FileText size={20} />,
-      text: 'Exams',
+      text: 'MCQ Exams',
       submenu: [
         { icon: <List size={18} />, text: 'All Exams', path: '/exams' },
         { icon: <Plus size={18} />, text: 'Create Exam', path: '/exams/create' },
@@ -62,21 +79,11 @@ const Sidebar = () => {
     {
       key: 'questions',
       icon: <HelpCircle size={20} />,
-      text: 'Questions',
+      text: 'Question Bank',
       submenu: [
-        { icon: <Book size={18} />, text: 'Question Bank', path: '/questions' },
+        { icon: <Book size={18} />, text: 'Browse Bank', path: '/questions' },
         { icon: <Plus size={18} />, text: 'Add Question', path: '/questions/create' },
         { icon: <FileInput size={18} />, text: 'Import Questions', path: '/questions/import' }
-      ]
-    },
-    {
-      key: 'subjects',
-      icon: <BookOpen size={20} />,
-      text: 'Subjects',
-      submenu: [
-        { icon: <List size={18} />, text: 'All Subjects', path: '/subjects' },
-        { icon: <Upload size={18} />, text: 'Ingest Document', path: '/ingest' },
-        { icon: <Database size={18} />, text: 'View Embeddings', path: '/vectors' }
       ]
     },
     {
@@ -106,7 +113,6 @@ const Sidebar = () => {
   return (
     <div
       className="sidebar"
-      onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
       <div className="sidebar-header">

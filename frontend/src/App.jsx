@@ -10,6 +10,9 @@ import IngestDocument from './pages/IngestDocument'
 import SubjectsList from './pages/SubjectsList'
 import SubjectDetail from './pages/SubjectDetail'
 import VectorsExplorer from './pages/VectorsExplorer'
+import GenerateExamNL from './pages/GenerateExamNL'
+import ViewPaper from './pages/ViewPaper'
+import AllPapers from './pages/AllPapers'
 import './App.css'
 
 function App() {
@@ -26,15 +29,25 @@ function App() {
                   <p>Question Paper and MCQ Exam Generator</p>
                 </div>
               } />
+              {/* Profile */}
               <Route path="/profile" element={<Profile />} />
               <Route path="/profile/change-password" element={<ChangePassword />} />
-              <Route path="/exams" element={<AllExams />} />
-              <Route path="/exams/create" element={<CreateExam />} />
-              <Route path="/exams/:examId" element={<ViewExam />} />
+              
+              {/* Document Ingestion */}
               <Route path="/ingest" element={<IngestDocument />} />
               <Route path="/subjects" element={<SubjectsList />} />
               <Route path="/subjects/:subjectId" element={<SubjectDetail />} />
               <Route path="/vectors" element={<VectorsExplorer />} />
+              
+              {/* Exam Generation */}
+              <Route path="/generate-nl" element={<GenerateExamNL />} />
+              <Route path="/papers" element={<AllPapers />} />
+              <Route path="/papers/:paperId" element={<ViewPaper />} />
+              
+              {/* Old Exam System (deprecated, keeping for reference) */}
+              <Route path="/exams" element={<AllExams />} />
+              <Route path="/exams/create" element={<CreateExam />} />
+              <Route path="/exams/:examId" element={<ViewExam />} />
             </Routes>
           </Layout>
         } />
