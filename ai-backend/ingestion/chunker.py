@@ -1,27 +1,33 @@
 """
-Smart section-aware chunker: clean → normalize → accumulate → chunk.
-Optional: semantic split (embedding-based) so we break at topic boundaries, not mid-thought.
+Semantic Chunker - Step 7 in Ingestion Pipeline
+
+Pipeline context:
+1. Parse (Unstructured) → raw elements
+2. Normalize (unicode/text cleanup) → clean text
+3. Caption Images (GPT-4o) → image descriptions  
+4. Format Tables (LLM) → Markdown tables
+5. Cleanup (remove noise) → filtered elements
+6. Classify (TEXT/DIAGRAM/CODE) → categorized elements
+7. Chunk (this module) → retrieval-optimized chunks
+8. Embed → vector representations
+9. Index → PostgreSQL + Qdrant
+10. Align → concept mapping
 
 Strategy:
-1. Prepare: drop junk, normalize text (remove PDF/PPT artifacts), join broken sentences, de-duplicate.
-2. Structure: heading stack → section_path for metadata.
-3. Accumulate: collect content until we reach optimal chunk size.
-4. Normalize: clean extra whitespace, remove CID artifacts, fix punctuation spacing.
-5. Chunk when target size reached, with proper minimum enforcement.
-6. Overlap: maintain 100-character overlap between consecutive chunks for continuity.
-
-Production principles:
-- Chunks must be 600-1000 characters for optimal retrieval
-- Every chunk includes full sentences - no mid-sentence breaks
-- Overlapping provides context continuity between chunks
+- Group elements into 600-1000 character chunks
+- Maintain section context (heading hierarchy)
+- 100-character overlap between chunks for continuity
+- Full sentences only (no mid-sentence breaks)
 - Simple, predictable accumulation logic
 
-Target: 600–1000 characters per chunk, 100-character overlap for continuity.
+Note: Heavy text normalization already done in Step 2 (normalizer.py)
 """
 
 from dataclasses import dataclass, field
 from typing import List, Any, Tuple, Callable, Optional
 import re
+
+from .normalizer import normalize_text  # Import for final whitespace cleanup
 
 # Chunk size: character count for direct control over chunk size.
 # Production settings: balanced for context and search performance.
@@ -65,61 +71,8 @@ class _NormElem:
     category: str
 
 
-def _normalize_text(text: str) -> str:
-    """
-    Normalize text to remove PDF/PPT artifacts and clean up formatting.
-    
-    Removes:
-    - Multiple spaces/tabs/newlines → single space
-    - CID artifacts from PDF: (cid:123)
-    - Unicode control characters
-    - Private Use Area characters (custom PDF symbols/bullets)
-    - Extra spaces around punctuation
-    - Bullet point artifacts (•, ■, □, ◦, etc.)
-    """
-    if not text or not text.strip():
-        return text
-    
-    # Remove CID artifacts (PDF encoding errors)
-    text = re.sub(r'\(cid:\d+\)', '', text)
-    
-    # Remove Private Use Area (PUA) characters: U+E000..U+F8FF
-    # These are custom symbols/bullets from PDFs (e.g., \uf07d)
-    text = re.sub(r'[\uE000-\uF8FF]', '', text)
-    
-    # Remove common bullet/box artifacts when standalone
-    text = re.sub(r'^[\u2022\u25A0\u25A1\u25C6\u25E6\u2023\u2043\u00B7\u2219]+\s*', '', text)
-    
-    # Remove unicode control characters and zero-width spaces
-    text = re.sub(r'[\u0000-\u001F\u007F-\u009F\u200B-\u200D\uFEFF]', '', text)
-    
-    # Normalize different types of spaces to regular space
-    text = re.sub(r'[\u00A0\u2000-\u200A\u202F\u205F]', ' ', text)
-    
-    # Normalize different types of hyphens/dashes to regular hyphen
-    text = re.sub(r'[\u2010-\u2015\u2212]', '-', text)
-    
-    # Normalize quotes
-    text = re.sub(r'[\u201C\u201D]', '"', text)  # Smart double quotes → "
-    text = re.sub(r'[\u2018\u2019]', "'", text)  # Smart single quotes → '
-    
-    # Remove multiple spaces, tabs, newlines → single space
-    text = re.sub(r'\s+', ' ', text)
-    
-    # Fix spacing around punctuation (common PDF artifact)
-    # Remove space before punctuation: "word ." → "word."
-    text = re.sub(r'\s+([.,;:!?)])', r'\1', text)
-    
-    # Ensure space after punctuation if followed by word: "word.next" → "word. next"
-    text = re.sub(r'([.,;:!?)])([A-Za-z])', r'\1 \2', text)
-    
-    # Remove space after opening brackets: "( word" → "(word"
-    text = re.sub(r'([(])\s+', r'\1', text)
-    
-    # Remove space before closing brackets: "word )" → "word)"
-    text = re.sub(r'\s+([)])', r'\1', text)
-    
-    return text.strip()
+# Note: _normalize_text removed - normalization now happens in Step 2 (normalizer.py)
+# We import normalize_text() at top for any final whitespace cleanup during chunking
 
 
 def _is_junk_token(text: str) -> bool:
@@ -188,8 +141,8 @@ def prepare_for_chunking(elements: List[Any]) -> List[_NormElem]:
         text = (getattr(elem, "text", None) or "").strip()
         if _is_junk_token(text):
             continue
-        # Normalize text to remove PDF/PPT artifacts
-        text = _normalize_text(text)
+        # Text already normalized in Step 2, but do final cleanup for combined text
+        text = normalize_text(text)
         if not text:  # Skip if normalization resulted in empty text
             continue
         page = getattr(elem, "page_number", None)
@@ -529,20 +482,30 @@ def _best_semantic_split_index(
 
 def chunk_elements(
     elements: List[Any],
+    section_paths: Optional[List[str]] = None,
     embed_fn: Optional[Callable[[List[str]], List[List[float]]]] = None,
 ) -> List[DocumentChunkInfo]:
     """
     Production-ready chunking: clean → normalize → accumulate → chunk with overlap.
     
-    FIXED Behavior:
+    Args:
+        elements: List of semantic elements to chunk
+        section_paths: Precomputed section paths for each element (from compute_section_paths_for_elements)
+        embed_fn: Optional embedding function for semantic splitting
+    
+   Behavior:
     - Checks size BEFORE adding text (prevents exceeding 1000 max)
     - Creates chunks with proper 100-char overlap
     - Enforces strict 600-1000 character range
     - Resets page tracking after each chunk
+    - Associates section_path from first source element
     
-    Result: Consistent 600-1000 char chunks with proper overlap.
+    Result: Consistent 600-1000 char chunks with proper overlap and section context.
     """
     normalized = prepare_for_chunking(elements)
+    # section_paths are passed in, precomputed from original elements
+    if section_paths is None:
+        section_paths = [""] * len(elements)
     chunks: List[DocumentChunkInfo] = []
     
     # Current chunk being built
@@ -560,14 +523,18 @@ def chunk_elements(
         
         # Combine all text parts
         combined_text = " ".join(current_text_parts)
-        combined_text = _normalize_text(combined_text).strip()
+        combined_text = normalize_text(combined_text).strip()
         
         # Skip if too small (shouldn't happen but safety check)
         if len(combined_text) < TARGET_CHUNK_MIN_CHARS:
             return
         
-        # Create chunk with section_path
+        # Get section_path from first source element
+        # (since chunks span elements, use the path of the first contributing element)
         section_path = ""
+        if current_orders and current_orders[0] < len(section_paths):
+            section_path = section_paths[current_orders[0]]
+        
         chunk_text = _enrich_chunk_text(combined_text, section_path)
         
         chunks.append(DocumentChunkInfo(
@@ -579,7 +546,7 @@ def chunk_elements(
             chunk_type="text",
         ))
         
-        # FIXED: Set up proper overlap for next chunk
+        # Set up overlap for next chunk
         if len(combined_text) > OVERLAP_CHARS:
             # Keep last OVERLAP_CHARS characters for continuity
             overlap_text = combined_text[-OVERLAP_CHARS:]
@@ -617,7 +584,7 @@ def chunk_elements(
         if category != "TEXT" or not text or _is_trivial_text(text):
             continue
         
-        # Check size before adding text
+        # Check size before adding text (prevent exceeding max)
         current_size = len(" ".join(current_text_parts))
         text_size = len(text)
         
@@ -643,11 +610,15 @@ def chunk_elements(
     # Handle remaining content
     if current_text_parts:
         combined_text = " ".join(current_text_parts)
-        combined_text = _normalize_text(combined_text).strip()
+        combined_text = normalize_text(combined_text).strip()
         
         if len(combined_text) >= TARGET_CHUNK_MIN_CHARS:
             # Large enough for its own chunk
+            # Get section_path from first source element
             section_path = ""
+            if current_orders and current_orders[0] < len(section_paths):
+                section_path = section_paths[current_orders[0]]
+            
             chunk_text = _enrich_chunk_text(combined_text, section_path)
             chunks.append(DocumentChunkInfo(
                 text=chunk_text,

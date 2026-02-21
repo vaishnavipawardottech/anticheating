@@ -16,7 +16,7 @@ def create_tables():
     """Create all tables in the database"""
     print("Creating database tables...")
     Base.metadata.create_all(bind=engine)
-    print("✓ Tables created successfully!")
+    print("Tables created successfully!")
     print("\nCreated tables:")
     print("  - subjects, units, concepts, aligned_elements")
     print("  - documents, parsed_elements, document_chunks")

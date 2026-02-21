@@ -78,7 +78,7 @@ def run():
         conn.commit()
     # PostgreSQL 11+ uses EXECUTE FUNCTION; older uses EXECUTE PROCEDURE
     # If trigger creation fails, try: EXECUTE PROCEDURE
-    print("✓ Migration add_chunk_search_vector completed")
+    print("Migration add_chunk_search_vector completed")
 
 
 if __name__ == "__main__":

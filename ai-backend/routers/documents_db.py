@@ -1,6 +1,16 @@
 """
-Document Upload and Database Integration Endpoint
-Handles complete pipeline: Upload → Parse → Cleanup → Classify → Embed → Index to Qdrant
+Document Upload and Database Integration Endpoint  
+Handles complete 10-step ingestion pipeline:
+1. Parse (Unstructured)
+2. Normalize (Unicode/text cleanup)
+3. Caption Images (GPT-4o)
+4. Format Tables (LLM → Markdown)
+5. Cleanup (Remove noise)
+6. Classify (TEXT/DIAGRAM/CODE)
+7. Chunk (Section-aware, 600-1000 chars)
+8. Embed (all-MiniLM-L6-v2)
+9. Index (PostgreSQL + Qdrant)
+10. Align (Gemini → Concepts)
 """
 
 import os
@@ -12,11 +22,17 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, status, Depends,
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from parsing.document_parser import DocumentParser
-from parsing.cleanup import cleanup_elements
-from parsing.classifier import ElementClassifier
-from parsing.chunker import chunk_elements, compute_section_paths_for_elements, table_to_row_chunks
-from parsing.schemas import SemanticElement
+# New ingestion pipeline modules
+from ingestion.parser import DocumentParser
+from ingestion.normalizer import normalize_elements
+from ingestion.image_captioner import caption_images
+from ingestion.table_formatter import format_tables
+from ingestion.cleanup import cleanup_elements
+from ingestion.classifier import ElementClassifier
+from ingestion.chunker import chunk_elements, compute_section_paths_for_elements, table_to_row_chunks
+from ingestion.schemas import SemanticElement
+from ingestion.academic_classifier import classify_chunks
+
 from database.database import get_db
 from database.models import Document, ParsedElement, DocumentChunk, Concept, Unit
 from database.schemas import DocumentResponse, ParsedElementResponse
@@ -26,8 +42,6 @@ from datetime import datetime
 from qdrant_client.models import PointStruct
 
 router = APIRouter(prefix="/documents", tags=["documents"])
-
-
 def _parse_optional_document_id(document_id: Optional[str] = Query(None)) -> Optional[int]:
     """Parse document_id query param; treat missing or empty string as None to avoid 422."""
     if not document_id or not str(document_id).strip():
@@ -137,19 +151,19 @@ async def upload_and_store_document(
     db: Session = Depends(get_db)
 ):
     """
-    Complete pipeline: Upload → Parse → Cleanup → Classify → Embed → Index to Qdrant
+    Complete 10-Step Ingestion Pipeline
     
     Steps:
-    1. Validate file
-    2. Create document record (to get ID)
-    3. Save file permanently with document ID in filename
-    4. Parse with Unstructured library
-    5. Apply cleanup filters
-    6. Classify elements
-    7. Generate embeddings for TEXT elements
-    8. Save elements to database
-    9. Index embeddings to Qdrant
-    10. Update document status
+    1. Parse document with Unstructured library (PDF/PPTX/DOCX)
+    2. Normalize unicode & text (remove PDF artifacts, clean formatting)
+    3. Caption images with GPT-4o Vision (generate text descriptions)
+    4. Format tables with LLM (convert to clean Markdown)
+    5. Cleanup (remove headers/footers/noise)
+    6. Classify elements (TEXT/DIAGRAM/CODE/TABLE)
+    7. Chunk content (600-1000 chars, 100 char overlap, section-aware)
+    8. Generate embeddings (all-MiniLM-L6-v2, 384-dim)
+    9. Index to storage (PostgreSQL + Qdrant vector DB)
+    10. Align chunks to concepts (Gemini AI classification)
     
     Returns document metadata with processing status
     
@@ -161,7 +175,7 @@ async def upload_and_store_document(
         # 1. Validate file
         filename, extension = validate_file(file)
         
-        print(f"📄 Processing {filename} ({extension})")
+        print(f"Processing {filename} ({extension})")
         
         # 2. Create document record first (to get ID for filename)
         document = Document(
@@ -189,7 +203,7 @@ async def upload_and_store_document(
         # 4. Parse document
         try:
             elements = DocumentParser.parse_document(saved_file_path, filename)
-            print(f"   Parsed {len(elements)} elements")
+            print(f"   Step 1: Parsed {len(elements)} elements")
         except ValueError as e:
             document.status = "failed"
             db.commit()
@@ -205,14 +219,34 @@ async def upload_and_store_document(
                 detail=f"Document parsing failed: {str(e)}"
             )
         
-        # 5. Apply cleanup filters
+        # 5. Normalize unicode and text (NEW - Step 2)
+        elements = normalize_elements(elements)
+        print(f"   Step 2: Text normalized")
+        
+        # 6. Caption images with GPT-4o (NEW - Step 3)
+        try:
+            elements = await caption_images(elements, saved_file_path)
+            print(f"   Step 3: Images captioned")
+        except Exception as e:
+            print(f"   Step 3: Image captioning failed: {str(e)}")
+            # Continue without image captions
+        
+        # 7. Format tables to Markdown (NEW - Step 4)
+        try:
+            elements = await format_tables(elements, saved_file_path)
+            print(f"   Step 4: Tables formatted")
+        except Exception as e:
+            print(f"   Step 4: Table formatting failed: {str(e)}")
+            # Continue with original table text
+        
+        # 8. Apply cleanup filters (Step 5)
         cleanup_result = cleanup_elements(elements)
         cleaned_elements = cleanup_result.elements
         cleanup_stats = cleanup_result.statistics
         
-        print(f"   Cleanup: {cleanup_stats.removed_elements} removed, {cleanup_stats.kept_elements} kept")
+        print(f"   Step 5: Cleanup - {cleanup_stats.removed_elements} removed, {cleanup_stats.kept_elements} kept")
         
-        # 6. Classify elements
+        # 9. Classify elements (Step 6)
         classifier = ElementClassifier()
         for element in cleaned_elements:
             element.category = classifier.classify(element)
@@ -224,27 +258,44 @@ async def upload_and_store_document(
             cat = getattr(element, 'category', 'OTHER')
             category_counts[cat] = category_counts.get(cat, 0) + 1
         
-        print(f"   Classification: {category_counts}")
+        print(f"   Step 6: Classification - {category_counts}")
         
-        # 6b. Section paths for every element (heading stack -> section_path per index)
+        # Step 6b: Section paths for metadata (heading stack → section_path)
         section_paths = compute_section_paths_for_elements(cleaned_elements)
 
-        # 6c. Section-aware + semantic chunking (break at topic boundaries when over size)
+        # Step 5: Semantic chunking (600-1000 chars, 100 overlap)
         try:
             emb_gen = get_embedding_generator()
             embed_fn = emb_gen.generate_embeddings_batch
         except Exception:
             embed_fn = None
-        doc_chunks = chunk_elements(cleaned_elements, embed_fn=embed_fn)
+        doc_chunks = chunk_elements(cleaned_elements, section_paths=section_paths, embed_fn=embed_fn)
         for idx, element in enumerate(cleaned_elements):
             if getattr(element, "category", "OTHER") == "TABLE" and element.text:
                 path = section_paths[idx] if idx < len(section_paths) else ""
                 page = getattr(element, "page_number", None) or 1
                 doc_chunks.extend(table_to_row_chunks(element.text, path, page, idx))
         doc_chunks.sort(key=lambda c: (c.page_start or 0, c.source_element_orders[0] if c.source_element_orders else 0))
-        print(f"   Chunking: {len(doc_chunks)} chunks (text + table rows) from {len(cleaned_elements)} elements")
+        print(f"   Step 5→6→7: Chunking → {len(doc_chunks)} chunks from {len(cleaned_elements)} elements")
+
+        # Step 7: LLM Academic Classification (Bloom's, difficulty, section_type, source_type)
+        chunk_classifications = []
+        try:
+            chunk_texts_for_classify = [c.text or "" for c in doc_chunks]
+            # Determine category per chunk: table_row/table_schema → TABLE, else TEXT
+            chunk_cats = [
+                "TABLE" if getattr(c, "chunk_type", "text") in ("table_row", "table_schema") else "TEXT"
+                for c in doc_chunks
+            ]
+            chunk_classifications = await classify_chunks(chunk_texts_for_classify, chunk_cats)
+            print(f"   Step 7: Academic classification complete for {len(chunk_classifications)} chunks")
+        except Exception as classify_err:
+            print(f"   Step 7: Academic classification failed — {classify_err}")
+            print(f"   Continuing with default classifications...")
+            from ingestion.academic_classifier import _default_classification
+            chunk_classifications = [_default_classification() for _ in doc_chunks]
         
-        # 7. Generate embeddings for TEXT elements
+        # Step 8: Generate embeddings for TEXT elements
         document.status = "embedding"
         db.commit()
         
@@ -260,7 +311,6 @@ async def upload_and_store_document(
         if text_indices_and_texts:
             indices = [t[0] for t in text_indices_and_texts]
             texts = [t[1] for t in text_indices_and_texts]
-            print(f"   Generating embeddings for {len(texts)} TEXT elements...")
             
             try:
                 embedding_gen = get_embedding_generator()
@@ -269,15 +319,15 @@ async def upload_and_store_document(
                 for stored_idx, embedding in zip(indices, embeddings):
                     embeddings_map[stored_idx] = embedding
                 
-                print(f"   ✓ Generated {len(embeddings)} embeddings (384-dim each)")
+                print(f"   Step 8: Generated {len(embeddings)} embeddings ({embedding_gen.EMBEDDING_DIM}-dim)")
                 
             except Exception as e:
-                print(f"   ⚠ Warning: Embedding generation failed: {str(e)}")
+                print(f"   Step 8: Embedding generation failed: {str(e)}")
                 print(f"   Continuing without embeddings...")
         else:
-            print(f"   No TEXT elements to embed")
+            print(f"   Step 8: No TEXT elements to embed")
         
-        # 8. Save elements to database (with section_path per element)
+        # Step 9a: Save elements to database (with section_path per element)
         for idx, element in enumerate(cleaned_elements):
             sp = section_paths[idx] if idx < len(section_paths) else None
             if sp and len(sp) > MAX_SECTION_PATH_LEN:
@@ -302,7 +352,7 @@ async def upload_and_store_document(
         if embeddings_map:
             print(f"   ({len(embeddings_map)} elements with embeddings)")
         
-        # 9. Index embeddings to Qdrant
+        # Step 9b: Index embeddings to Qdrant (vector search)
         if embeddings_map:
             document.status = "indexing"
             db.commit()
@@ -323,9 +373,13 @@ async def upload_and_store_document(
                 embeddings_list = []
                 metadatas = []
                 
+                # Get expected dimension
+                emb_gen = get_embedding_generator()
+                expected_dim = emb_gen.EMBEDDING_DIM
+                
                 for elem in saved_elements:
                     ev = elem.embedding_vector
-                    if ev is None or not isinstance(ev, list) or len(ev) != 384:
+                    if ev is None or not isinstance(ev, list) or len(ev) != expected_dim:
                         continue
                     element_ids.append(elem.id)
                     embeddings_list.append(ev)
@@ -356,13 +410,13 @@ async def upload_and_store_document(
                     elem.embedded_at = now
                 
                 db.commit()
-                print(f"   ✓ Indexed {len(vector_ids)} vectors to Qdrant")
+                print(f"   Indexed {len(vector_ids)} vectors to Qdrant")
                 
             except Exception as e:
-                print(f"   ⚠ Qdrant indexing failed: {str(e)}")
+                print(f"   Qdrant indexing failed: {str(e)}")
                 print(f"   Continuing without vector indexing (embeddings saved in DB)...")
         
-        # 9b. Save and index chunks (section-aware retrieval)
+        # Step 10: Save chunks to Postgres (primary structured store)
         if doc_chunks:
             for chunk_index, cinfo in enumerate(doc_chunks):
                 # section_path can be very long in slide decks; truncate so VARCHAR(500) never exceeded
@@ -370,6 +424,10 @@ async def upload_and_store_document(
                 if sp and len(sp) > MAX_SECTION_PATH_LEN:
                     sp = sp[: MAX_SECTION_PATH_LEN - 3] + "..."
                 token_count = int(len((cinfo.text or "").split()) * 1.3)
+
+                # Attach Step 7 classification results (safe - defaults already set)
+                clf = chunk_classifications[chunk_index] if chunk_index < len(chunk_classifications) else None
+
                 db_chunk = DocumentChunk(
                     document_id=document.id,
                     chunk_index=chunk_index,
@@ -384,6 +442,15 @@ async def upload_and_store_document(
                     row_id=getattr(cinfo, "row_id", None),
                     unit_id=None,
                     concept_id=None,
+                    # ── Step 7: Academic Classification ──
+                    section_type=clf.section_type if clf else None,
+                    source_type=clf.source_type if clf else None,
+                    blooms_level=clf.blooms_level if clf else None,
+                    blooms_level_int=clf.blooms_level_int if clf else None,
+                    difficulty=clf.difficulty if clf else None,
+                    difficulty_score=clf.difficulty_score if clf else None,
+                    usage_count=0,
+                    # search_vector is auto-set by the DB trigger
                 )
                 db.add(db_chunk)
             db.commit()
@@ -402,9 +469,10 @@ async def upload_and_store_document(
                 model_name = emb_model.model_name
                 dim = emb_model.EMBEDDING_DIM
                 now = datetime.now()
+                expected_dim = dim  # Already fetched above
                 for c, emb in zip(saved_chunks, chunk_embeddings):
                     c.embedding_vector = emb
-                    if emb is None or not isinstance(emb, list) or len(emb) != 384:
+                    if emb is None or not isinstance(emb, list) or len(emb) != expected_dim:
                         continue
                     chunk_ids.append(c.id)
                     embeddings_list.append(emb)
@@ -419,6 +487,13 @@ async def upload_and_store_document(
                         "page_end": c.page_end or 0,
                         "point_type": "chunk",
                         "chunk_type": getattr(c, "chunk_type", "text") or "text",
+                        # ── Step 11: Academic classification in Qdrant payload ──
+                        "blooms_level_int": c.blooms_level_int or 2,
+                        "difficulty": c.difficulty or "medium",
+                        "section_type": c.section_type or "explanation",
+                        "source_type": c.source_type or "textbook",
+                        "usage_count": c.usage_count or 0,
+                        "chunk_id": c.id,
                     }
                     if getattr(c, "table_id", None) is not None:
                         meta["table_id"] = c.table_id
@@ -438,17 +513,17 @@ async def upload_and_store_document(
                             c.embedding_dim = dim
                             c.embedded_at = now
                     db.commit()
-                    print(f"   ✓ Indexed {len(chunk_ids)} chunks to Qdrant")
+                    print(f"   Indexed {len(chunk_ids)} chunks to Qdrant")
                 else:
                     db.commit()  # persist embedding_vector on chunks even when not indexing
-                    print(f"   ⚠ No chunk embeddings to index (skipped)")
+                    print(f"   No chunk embeddings to index (skipped)")
             except Exception as e:
-                print(f"   ⚠ Chunk embedding/indexing failed: {str(e)}")
+                print(f"   Chunk embedding/indexing failed: {str(e)}")
         
-        # 9c. Auto-align chunks to concepts (NEW: automatic alignment during ingestion)
+        # Step 10: Auto-align chunks to concepts (AI-powered with Gemini)
         if doc_chunks and saved_chunks:
             try:
-                print(f"   🎯 Starting automatic chunk alignment...")
+                print(f"   Step 10: Auto-aligning chunks to concepts...")
                 
                 # Get concepts for this subject
                 concepts = db.query(Concept).join(Unit).filter(Unit.subject_id == subject_id).all()
@@ -492,11 +567,18 @@ async def upload_and_store_document(
                     
                     db.commit()
                     
-                    # Update Qdrant payloads with concept_id and unit_id
+                    # Update Qdrant payloads with concept_id and unit_id (metadata only)
                     try:
                         qdrant = get_qdrant_manager()
+                        point_ids = []
                         for c in saved_chunks:
-                            if c.embedding_vector and c.vector_id:
+                            # Only need chunk to be indexed (has vector_id)
+                            if c.vector_id:
+                                point_ids.append(c.id + qdrant.CHUNK_ID_OFFSET)
+                        
+                        # Update payloads in batch (more efficient than upserting entire vectors)
+                        for c in saved_chunks:
+                            if c.vector_id:
                                 sp = (c.section_path or "")[:MAX_SECTION_PATH_LEN]
                                 payload = {
                                     "subject_id": subject_id,
@@ -507,28 +589,24 @@ async def upload_and_store_document(
                                     "page_start": c.page_start or 0,
                                     "page_end": c.page_end or 0,
                                     "point_type": "chunk",
+                                    "chunk_type": c.chunk_type or "text",
                                     "chunk_id": c.id,
                                 }
-                                qdrant.client.upsert(
-                                    collection_name=qdrant.COLLECTION_NAME,
-                                    points=[
-                                        PointStruct(
-                                            id=c.id + qdrant.CHUNK_ID_OFFSET,
-                                            vector=c.embedding_vector,
-                                            payload=payload,
-                                        )
-                                    ],
+                                qdrant.client.set_payload(
+                                    collection_name=qdrant.COLLECTION_CHUNKS,
+                                    payload=payload,
+                                    points=[c.id + qdrant.CHUNK_ID_OFFSET],
                                 )
-                        print(f"   ✓ Auto-aligned {aligned_count}/{len(saved_chunks)} chunks to concepts")
+                        print(f"   Step 10: Aligned {aligned_count}/{len(saved_chunks)} chunks, updated Qdrant payloads")
                     except Exception as qdrant_err:
-                        print(f"   ⚠ Qdrant payload update failed: {str(qdrant_err)}")
-                        print(f"   ℹ️  Alignment saved to database, but Qdrant filtering may not work")
+                        print(f"   Qdrant payload update failed: {str(qdrant_err)}")
+                        print(f"   Alignment saved to database, but Qdrant filtering may not work")
                 else:
-                    print(f"   ⚠ No concepts found for subject_id={subject_id}, skipping alignment")
+                    print(f"   Step 10: No concepts found for subject_id={subject_id}, skipping alignment")
                     
             except Exception as align_err:
-                print(f"   ⚠ Auto-alignment failed: {str(align_err)}")
-                print(f"   ℹ️  Document ingested successfully, but chunks not aligned")
+                print(f"   Step 10: Alignment failed - {str(align_err)}")
+                print(f"   Document ingested successfully, but chunks not aligned")
                 import traceback
                 traceback.print_exc()
         
@@ -536,7 +614,7 @@ async def upload_and_store_document(
         document.status = "indexed" if embeddings_map else "parsed"
         db.commit()
         
-        print(f"✓ Document processing complete: {filename}")
+        print(f"Document processing complete: {filename}")
         
         return document
         
@@ -551,7 +629,7 @@ async def upload_and_store_document(
         # Log full error traceback
         import traceback
         error_traceback = traceback.format_exc()
-        print(f"❌ ERROR during document processing:")
+        print(f"ERROR during document processing:")
         print(error_traceback)
         
         # Keep file for debugging
@@ -611,7 +689,7 @@ def get_embedding_status(
             "chunks_total": c_tot,
             "chunks_embedded": c_emb,
             "chunks_missing": c_tot - c_emb,
-            "badge": f"{c_emb}/{c_tot} chunks" + (" ✅" if c_tot and c_emb == c_tot else ""),
+            "badge": f"{c_emb}/{c_tot} chunks" + (" [OK]" if c_tot and c_emb == c_tot else ""),
         })
 
     return {
@@ -820,18 +898,18 @@ def delete_document(document_id: int, db: Session = Depends(get_db)):
     try:
         qdrant = get_qdrant_manager()
         qdrant.delete_by_document(document_id)
-        print(f"✓ Deleted vectors for document {document_id} from Qdrant")
+        print(f"Deleted vectors for document {document_id} from Qdrant")
     except Exception as e:
-        print(f"⚠ Qdrant cleanup failed: {str(e)}")
+        print(f"Qdrant cleanup failed: {str(e)}")
         # Continue with database deletion even if Qdrant fails
     
     # Delete file if it exists
     if document.file_path and os.path.exists(document.file_path):
         try:
             os.remove(document.file_path)
-            print(f"✓ Deleted file: {document.file_path}")
+            print(f"Deleted file: {document.file_path}")
         except Exception as e:
-            print(f"⚠ File deletion failed: {str(e)}")
+            print(f"File deletion failed: {str(e)}")
     
     # Delete chunks and elements first so FK is never set to NULL (avoids NotNullViolation)
     db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).delete()
@@ -840,3 +918,47 @@ def delete_document(document_id: int, db: Session = Depends(get_db)):
     db.commit()
     
     return {"message": f"Document {document_id} deleted successfully"}
+
+
+# ─── Usage Tracking ────────────────────────────────────────────────────────────
+
+@router.post("/chunks/{chunk_id}/increment-usage")
+def increment_chunk_usage(chunk_id: int, db: Session = Depends(get_db)):
+    """
+    Increment the usage_count for a chunk (called after using a chunk for Q-gen).
+
+    Atomically increments in Postgres, then syncs the updated value to
+    the Qdrant payload so filtered retrieval (max_usage_count) stays accurate.
+    """
+    chunk = db.query(DocumentChunk).filter(DocumentChunk.id == chunk_id).first()
+    if not chunk:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chunk {chunk_id} not found"
+        )
+
+    # Atomic increment in Postgres
+    chunk.usage_count = (chunk.usage_count or 0) + 1
+    db.commit()
+    db.refresh(chunk)
+    new_count = chunk.usage_count
+
+    # Sync to Qdrant payload (non-blocking — failure is logged but not raised)
+    try:
+        if chunk.vector_id:
+            qdrant = get_qdrant_manager()
+            # Extract numeric id from "chunk_1234" format
+            numeric_id = int(chunk.vector_id.replace("chunk_", ""))
+            qdrant.client.set_payload(
+                collection_name=qdrant.COLLECTION_CHUNKS,
+                payload={"usage_count": new_count},
+                points=[numeric_id],
+            )
+    except Exception as e:
+        print(f"   [usage_count] Qdrant sync failed for chunk {chunk_id}: {e}")
+
+    return {
+        "chunk_id": chunk_id,
+        "usage_count": new_count,
+        "message": "Usage count incremented"
+    }

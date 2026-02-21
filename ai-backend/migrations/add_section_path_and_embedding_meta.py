@@ -61,7 +61,7 @@ def run():
                 conn.commit()
                 print(f"  document_chunks.{col} added")
 
-    print("✓ Migration add_section_path_and_embedding_meta completed")
+    print("Migration add_section_path_and_embedding_meta completed")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,18 @@
 """
-DEBUG SCRIPT: Test document ingestion pipeline step-by-step
+DEBUG SCRIPT: Test NEW 10-step ingestion pipeline
 Run this to see output at each stage without uploading through API
+
+New Pipeline:
+1. Parse (Unstructured)
+2. Normalize (Unicode/text cleanup)
+3. Caption Images (GPT-4o) - optional
+4. Format Tables (LLM) - optional
+5. Cleanup (Remove noise)
+6. Classify (TEXT/DIAGRAM/CODE)
+7. Chunk (Section-aware, 600-1000 chars)
+8. Embed (all-MiniLM-L6-v2) - skipped in debug
+9. Index (PostgreSQL + Qdrant) - skipped in debug
+10. Align (Gemini → Concepts) - skipped in debug
 
 Usage:
     python debug_ingestion.py path/to/your/document.pdf
@@ -14,10 +26,11 @@ from datetime import datetime
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
-from parsing.document_parser import DocumentParser
-from parsing.cleanup import cleanup_elements
-from parsing.classifier import ElementClassifier
-from parsing.chunker import (
+from ingestion import (
+    DocumentParser,
+    normalize_elements,
+    cleanup_elements,
+    ElementClassifier,
     compute_section_paths_for_elements,
     prepare_for_chunking,
     chunk_elements,
@@ -34,7 +47,7 @@ def debug_step_1_parse(file_path: str):
     filename = Path(file_path).name
     elements = DocumentParser.parse_document(file_path, filename)
     
-    print(f"\n✓ Parsed {len(elements)} raw elements")
+    print(f"\nParsed {len(elements)} raw elements")
     
     # Export ALL parsed elements to JSON for detailed inspection
     json_output = []
@@ -56,9 +69,9 @@ def debug_step_1_parse(file_path: str):
     json_file = output_dir / f"unstructured_output_{timestamp}.json"
     
     with open(json_file, 'w', encoding='utf-8') as f:
-        json.dump(json_output, f, indent=2, ensure_ascii=False)
+        json.dump(json_output, f,indent=2, ensure_ascii=False)
     
-    print(f"\n📄 FULL JSON OUTPUT saved to: {json_file}")
+    print(f"\nFULL JSON OUTPUT saved to: {json_file}")
     print(f"   Contains all {len(elements)} elements with complete text and metadata")
     
     print(f"\nFirst 10 elements:")
@@ -91,9 +104,9 @@ def debug_step_2_cleanup(elements):
     cleaned = cleanup_result.elements
     stats = cleanup_result.statistics
     
-    print(f"\n✓ Before: {len(elements)} elements")
-    print(f"✓ After:  {len(cleaned)} elements")
-    print(f"✓ Removed: {stats.removed_elements}, Kept: {stats.kept_elements}")
+    print(f"\nBefore: {len(elements)} elements")
+    print(f"After:  {len(cleaned)} elements")
+    print(f"Removed: {stats.removed_elements}, Kept: {stats.kept_elements}")
     
     # Export cleaned elements to JSON
     json_output = []
@@ -115,7 +128,7 @@ def debug_step_2_cleanup(elements):
     with open(json_file, 'w', encoding='utf-8') as f:
         json.dump(json_output, f, indent=2, ensure_ascii=False)
     
-    print(f"\n📄 Cleaned elements saved to: {json_file}")
+    print(f"\nCleaned elements saved to: {json_file}")
     
     print(f"\nFirst 10 cleaned elements:")
     print("-" * 80)
@@ -146,8 +159,8 @@ def debug_step_3_classify(elements):
         cat = getattr(elem, 'category', 'OTHER')
         category_counts[cat] = category_counts.get(cat, 0) + 1
     
-    print(f"\n✓ Classification complete")
-    print(f"✓ Category counts: {category_counts}")
+    print(f"\nClassification complete")
+    print(f"Category counts: {category_counts}")
     
     # Show TEXT elements
     text_elements = [e for e in elements if e.category == 'TEXT']
@@ -170,7 +183,7 @@ def debug_step_4_section_paths(elements):
     
     section_paths = compute_section_paths_for_elements(elements)
     
-    print(f"\n✓ Generated {len(section_paths)} section paths")
+    print(f"\nGenerated {len(section_paths)} section paths")
     print(f"\nFirst 20 elements with paths:")
     print("-" * 80)
     
@@ -201,8 +214,8 @@ def debug_step_5_prepare_chunking(elements):
     
     normalized = prepare_for_chunking(elements)
     
-    print(f"\n✓ Input: {len(elements)} elements")
-    print(f"✓ Output: {len(normalized)} normalized elements (after merging fragments)")
+    print(f"\nInput: {len(elements)} elements")
+    print(f"Output: {len(normalized)} normalized elements (after merging fragments)")
     
     print(f"\nFirst 10 normalized elements:")
     print("-" * 80)
@@ -228,14 +241,14 @@ def debug_step_6_chunking(elements):
         from embeddings.generator import get_embedding_generator
         emb_gen = get_embedding_generator()
         embed_fn = emb_gen.generate_embeddings_batch
-        print("✓ Using semantic splitting with embeddings")
+        print("Using semantic splitting with embeddings")
     except Exception as e:
         embed_fn = None
-        print(f"⚠ Semantic splitting disabled: {e}")
+        print(f"Semantic splitting disabled: {e}")
     
     chunks = chunk_elements(elements, embed_fn=embed_fn)
     
-    print(f"\n✓ Created {len(chunks)} chunks")
+    print(f"\nCreated {len(chunks)} chunks")
     
     # Export chunks to JSON
     json_output = []
@@ -259,7 +272,7 @@ def debug_step_6_chunking(elements):
     with open(json_file, 'w', encoding='utf-8') as f:
         json.dump(json_output, f, indent=2, ensure_ascii=False)
     
-    print(f"\n📄 Chunks saved to: {json_file}")
+    print(f"\nChunks saved to: {json_file}")
     
     # Analyze chunk sizes
     chunk_sizes = [len(c.text) for c in chunks]
@@ -267,7 +280,7 @@ def debug_step_6_chunking(elements):
     min_size = min(chunk_sizes) if chunk_sizes else 0
     max_size = max(chunk_sizes) if chunk_sizes else 0
     
-    print(f"\n📊 CHUNK SIZE ANALYSIS:")
+    print(f"\nCHUNK SIZE ANALYSIS:")
     print(f"  • Average: {avg_size:.0f} chars")
     print(f"  • Min: {min_size} chars")
     print(f"  • Max: {max_size} chars")
@@ -282,7 +295,7 @@ def debug_step_6_chunking(elements):
     print(f"\n  Size distribution:")
     print(f"  • < 300 chars (too small): {tiny}")
     print(f"  • 300-600 chars: {small}")
-    print(f"  • 600-1000 chars (TARGET): {good} ✓")
+    print(f"  • 600-1000 chars (TARGET): {good}")
     print(f"  • > 1000 chars: {large}")
     
     print(f"\nFirst 5 chunks:")
@@ -300,7 +313,7 @@ def debug_step_6_chunking(elements):
     
     # Check for overlap (compare consecutive chunks)
     if len(chunks) >= 2:
-        print(f"\n📊 OVERLAP CHECK (first 2 chunks):")
+        print(f"\nOVERLAP CHECK (first 2 chunks):")
         chunk1_end = chunks[0].text[-100:] if len(chunks[0].text) >= 100 else chunks[0].text
         chunk2_start = chunks[1].text[:100] if len(chunks[1].text) >= 100 else chunks[1].text
         
@@ -347,13 +360,13 @@ def main():
         print("\n" + "="*80)
         print("FINAL SUMMARY")
         print("="*80)
-        print(f"✓ Parsed: {len(elements)} raw elements")
-        print(f"✓ Cleaned: {len(cleaned)} elements")
-        print(f"✓ Classified: {len(classified)} elements")
-        print(f"✓ Normalized: {len(normalized)} elements")
-        print(f"✓ Chunks: {len(chunks)} chunks")
+        print(f"Parsed: {len(elements)} raw elements")
+        print(f"Cleaned: {len(cleaned)} elements")
+        print(f"Classified: {len(classified)} elements")
+        print(f"Normalized: {len(normalized)} elements")
+        print(f"Chunks: {len(chunks)} chunks")
         
-        print(f"\n📄 JSON FILES SAVED:")
+        print(f"\nJSON FILES SAVED:")
         print(f"   All JSON outputs are in: parsing/output/")
         print(f"   - unstructured_output_*.json (raw parsed elements)")
         print(f"   - cleaned_elements_*.json (after cleanup)")
@@ -364,17 +377,17 @@ def main():
         good_chunks = len([s for s in chunk_sizes if 600 <= s <= 1000])
         bad_chunks = len([s for s in chunk_sizes if s < 600])
         
-        print(f"\n📊 VERDICT:")
+        print(f"\nVERDICT:")
         if good_chunks > len(chunks) * 0.7:
-            print(f"✅ GOOD: {good_chunks}/{len(chunks)} chunks in target range (600-1000 chars)")
+            print(f"GOOD: {good_chunks}/{len(chunks)} chunks in target range (600-1000 chars)")
         else:
-            print(f"❌ BAD: Only {good_chunks}/{len(chunks)} chunks in target range")
+            print(f"BAD: Only {good_chunks}/{len(chunks)} chunks in target range")
             print(f"   {bad_chunks} chunks are too small (< 600 chars)")
             print(f"\n   This indicates a problem in the chunking logic!")
             print(f"   Check the JSON files to see where content is breaking.")
         
     except Exception as e:
-        print(f"\n❌ ERROR: {e}")
+        print(f"\nERROR: {e}")
         import traceback
         traceback.print_exc()
 

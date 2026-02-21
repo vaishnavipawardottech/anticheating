@@ -38,7 +38,7 @@ class SemanticSearchRequest(BaseModel):
 
 
 class HybridSearchRequest(BaseModel):
-    """Request for hybrid FTS + vector search with optional rerank"""
+    """Request for hybrid FTS + vector search with optional rerank and academic filters"""
     query: str = Field(..., description="Search query (natural language or keywords)", min_length=1)
     subject_id: int = Field(..., description="Subject ID to search within")
     document_id: Optional[int] = Field(None, description="Filter by document")
@@ -46,6 +46,12 @@ class HybridSearchRequest(BaseModel):
     use_fts: bool = Field(True, description="Include Postgres full-text search")
     use_vector: bool = Field(True, description="Include Qdrant vector search")
     rerank_top_n: Optional[int] = Field(None, description="Rerank top N after merge (e.g. 30→8); None = no rerank")
+    # ── Academic filters (Step 7 classification) ──
+    blooms_level_int_min: Optional[int] = Field(None, description="Minimum Bloom level (1=remember .. 6=create)", ge=1, le=6)
+    blooms_level_int_max: Optional[int] = Field(None, description="Maximum Bloom level (1=remember .. 6=create)", ge=1, le=6)
+    difficulty: Optional[str] = Field(None, description="Difficulty filter: easy | medium | hard")
+    section_type: Optional[str] = Field(None, description="Section type filter: definition | example | derivation | exercise | explanation | summary")
+    max_usage_count: Optional[int] = Field(None, description="Exclude chunks used more than this many times", ge=0)
 
 
 class SearchResult(BaseModel):
@@ -59,6 +65,15 @@ class SearchResult(BaseModel):
     document_filename: str
     subject_id: int
     section_path: Optional[str] = None
+    # Academic classification fields (populated for chunks)
+    blooms_level: Optional[str] = None
+    difficulty: Optional[str] = None
+    section_type: Optional[str] = None
+    usage_count: Optional[int] = None
+    # Score breakdown for debugging / tuning
+    bm25_score: Optional[float] = None
+    vector_score: Optional[float] = None
+    rrf_score: Optional[float] = None
 
 
 class SemanticSearchResponse(BaseModel):
@@ -218,18 +233,41 @@ async def hybrid_search(
     try:
         if request.use_fts:
             q_escaped = query.replace("'", "''")
-            sql = text("""
+
+            # Build dynamic WHERE clauses for academic filters
+            academic_clauses = []
+            academic_params: dict = {"sid": subject_id, "q": q_escaped, "doc_id": document_id}
+
+            if request.blooms_level_int_min is not None:
+                academic_clauses.append("AND c.blooms_level_int >= :blooms_min")
+                academic_params["blooms_min"] = request.blooms_level_int_min
+            if request.blooms_level_int_max is not None:
+                academic_clauses.append("AND c.blooms_level_int <= :blooms_max")
+                academic_params["blooms_max"] = request.blooms_level_int_max
+            if request.difficulty:
+                academic_clauses.append("AND c.difficulty = :difficulty")
+                academic_params["difficulty"] = request.difficulty
+            if request.section_type:
+                academic_clauses.append("AND c.section_type = :section_type")
+                academic_params["section_type"] = request.section_type
+            if request.max_usage_count is not None:
+                academic_clauses.append("AND c.usage_count <= :max_usage")
+                academic_params["max_usage"] = request.max_usage_count
+
+            extra_where = " ".join(academic_clauses)
+
+            sql = text(f"""
                 SELECT c.id
                 FROM document_chunks c
                 JOIN documents d ON d.id = c.document_id
                 WHERE d.subject_id = :sid
                 AND c.search_vector @@ plainto_tsquery('english', :q)
                 AND (:doc_id IS NULL OR c.document_id = :doc_id)
+                {extra_where}
                 ORDER BY ts_rank_cd(c.search_vector, plainto_tsquery('english', :q)) DESC
                 LIMIT 100
             """)
-            params = {"sid": subject_id, "q": q_escaped, "doc_id": document_id}
-            rows = db.execute(sql, params).fetchall()
+            rows = db.execute(sql, academic_params).fetchall()
             for rank_1based, (cid,) in enumerate(rows, start=1):
                 # RRF: 1/(k+rank)
                 fts_scores[cid] = 1.0 / (RRF_K + rank_1based)
@@ -251,17 +289,42 @@ async def hybrid_search(
                 document_id=document_id,
                 score_threshold=0.0,
             )
+            print(f"   [HybridSearch] Qdrant returned {len(raw)} raw results")
             for rank_1based, r in enumerate(raw, start=1):
                 if r.get("point_type") == "chunk" and r.get("chunk_id") is not None:
                     cid = r["chunk_id"]
+                    # Academic filter fields are nested under r["metadata"] (Qdrant payload)
+                    meta = r.get("metadata") or {}
+                    if request.blooms_level_int_min is not None and (meta.get("blooms_level_int") or 0) < request.blooms_level_int_min:
+                        continue
+                    if request.blooms_level_int_max is not None and (meta.get("blooms_level_int") or 6) > request.blooms_level_int_max:
+                        continue
+                    if request.difficulty and meta.get("difficulty") != request.difficulty:
+                        continue
+                    if request.section_type and meta.get("section_type") != request.section_type:
+                        continue
+                    if request.max_usage_count is not None and (meta.get("usage_count") or 0) > request.max_usage_count:
+                        continue
                     vector_scores[cid] = 1.0 / (RRF_K + rank_1based)
-        except Exception:
-            pass
+            print(f"   [HybridSearch] Vector candidates after filters: {len(vector_scores)}")
+        except Exception as e:
+            print(f"   [HybridSearch] Vector search error: {e}")
 
     # 3) Merge: RRF sum per chunk_id
     all_ids = set(fts_scores.keys()) | set(vector_scores.keys())
     merged = [(cid, fts_scores.get(cid, 0) + vector_scores.get(cid, 0)) for cid in all_ids]
     merged.sort(key=lambda x: -x[1])
+
+    # Build lookup: chunk_id → (rrf_score, bm25_rrf, vector_rrf)
+    scores_map: dict = {
+        cid: {
+            "rrf": fts_scores.get(cid, 0) + vector_scores.get(cid, 0),
+            "bm25": round(fts_scores.get(cid, 0), 6),
+            "vector": round(vector_scores.get(cid, 0), 6),
+        }
+        for cid in all_ids
+    }
+
     ordered_chunk_ids = [cid for cid, _ in merged[: limit * 3]]
 
     # 4) Optional rerank: take top rerank_n, rerank by keyword overlap, then top limit
@@ -277,18 +340,32 @@ async def hybrid_search(
 
     ordered_chunk_ids = ordered_chunk_ids[: limit]
 
-    # 5) Enrich from DB
+    # 5) Enrich from DB — include academic classification fields + real scores
+    # Batch-fetch all needed chunks in one query (avoids N+1)
+    chunk_map = {
+        c.id: c
+        for c in db.query(DocumentChunk).filter(DocumentChunk.id.in_(ordered_chunk_ids)).all()
+    }
+    doc_map = {
+        d.id: d
+        for d in db.query(Document).filter(
+            Document.id.in_([c.document_id for c in chunk_map.values()])
+        ).all()
+    }
+
     results = []
     for cid in ordered_chunk_ids:
-        chunk = db.query(DocumentChunk).filter(DocumentChunk.id == cid).first()
+        chunk = chunk_map.get(cid)
         if not chunk:
             continue
-        doc = db.query(Document).filter(Document.id == chunk.document_id).first()
+        doc = doc_map.get(chunk.document_id)
         if not doc:
             continue
+        sc = scores_map.get(cid, {})
+        rrf = sc.get("rrf", 0.0)
         results.append(SearchResult(
             element_id=chunk.id,
-            score=1.0,
+            score=round(rrf, 6),          # ← real RRF score, not 1.0
             text=chunk.text or "",
             category="CHUNK",
             page_number=chunk.page_start,
@@ -296,6 +373,13 @@ async def hybrid_search(
             document_filename=doc.filename,
             subject_id=doc.subject_id,
             section_path=chunk.section_path,
+            blooms_level=getattr(chunk, "blooms_level", None),
+            difficulty=getattr(chunk, "difficulty", None),
+            section_type=getattr(chunk, "section_type", None),
+            usage_count=getattr(chunk, "usage_count", None),
+            bm25_score=sc.get("bm25"),
+            vector_score=sc.get("vector"),
+            rrf_score=round(rrf, 6),
         ))
 
     search_time = (time.time() - start_time) * 1000

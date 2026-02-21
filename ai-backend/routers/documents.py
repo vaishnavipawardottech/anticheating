@@ -192,7 +192,7 @@ async def parse_document(
         temp_file_path, file_size = await save_upload_file_tmp(file, extension)
         
         # Log file info
-        print(f"📄 Parsing {filename} ({extension}, {file_size} bytes)")
+        print(f"Parsing {filename} ({extension}, {file_size} bytes)")
         
         # 3. Parse document
         try:
@@ -281,9 +281,9 @@ async def parse_document(
         if temp_file_path and os.path.exists(temp_file_path):
             try:
                 os.unlink(temp_file_path)
-                print(f"🗑️  Cleaned up temp file: {temp_file_path}")
+                print(f"Cleaned up temp file: {temp_file_path}")
             except Exception as e:
-                print(f"⚠️  Failed to delete temp file {temp_file_path}: {e}")
+                print(f"Failed to delete temp file {temp_file_path}: {e}")
 
 
 @router.post("/parse-and-cleanup")
@@ -317,7 +317,7 @@ async def parse_and_cleanup_document(
         temp_file_path, file_size = await save_upload_file_tmp(file, extension)
         
         # Log file info
-        print(f"📄 Parsing and cleaning {filename} ({extension}, {file_size} bytes)")
+        print(f"Parsing and cleaning {filename} ({extension}, {file_size} bytes)")
         
         # 3. Parse document
         try:
@@ -386,9 +386,9 @@ async def parse_and_cleanup_document(
         if temp_file_path and os.path.exists(temp_file_path):
             try:
                 os.unlink(temp_file_path)
-                print(f"🗑️  Cleaned up temp file: {temp_file_path}")
+                print(f"Cleaned up temp file: {temp_file_path}")
             except Exception as e:
-                print(f"⚠️  Failed to delete temp file {temp_file_path}: {e}")
+                print(f"Failed to delete temp file {temp_file_path}: {e}")
 
 
 @router.get("/parse/supported-types")

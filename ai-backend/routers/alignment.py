@@ -1,6 +1,8 @@
 """
-Alignment Router
-Maps cleaned document elements to concepts using Gemini API
+Alignment Router - Brain Upgrade
+Maps cleaned document elements to concepts using GPT-4o-mini Structured Outputs
+
+Brain Upgrade: Uses GPT-4o-mini with strict JSON schema for reliable alignment.
 """
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -12,7 +14,7 @@ import json
 from database.database import get_db
 from database.models import Concept, Unit, AlignedElement, ParsedElement, DocumentChunk, Document
 from parsing.schemas import SemanticElement
-from routers.structure_ai import call_gemini_flash
+from routers.structure_ai import call_gpt4o_mini_structured
 from embeddings.qdrant_manager import get_qdrant_manager
 from qdrant_client.models import PointStruct
 
@@ -42,30 +44,48 @@ class AlignmentResponse(BaseModel):
     results: List[AlignmentResult]
 
 
-# Prompt template
-ALIGNMENT_PROMPT = """You are classifying document elements to academic concepts.
+# Prompt template for GPT-4o-mini structured alignment
+ALIGNMENT_PROMPT = """You are classifying document chunks to academic concepts.
 
 AVAILABLE CONCEPTS:
 {concepts_list}
 
-ELEMENTS TO CLASSIFY:
+CHUNKS TO CLASSIFY:
 {elements_json}
 
-TASK: For each element, determine which concept (by ID) it belongs to.
+TASK: For each chunk, determine which concept (by ID) it belongs to.
 
 RULES:
-- Return concept_id from the concepts list above, or null if no good match
+- Match concept_id from the list above, or use null if no good match
 - Include confidence score between 0.0 and 1.0
-- If confidence < 0.7, use null for concept_id
-- Match based on semantic meaning, not just keywords
+- If confidence < 0.7, set concept_id to null
+- Match based on semantic meaning and context
+- Consider the section hierarchy and topic flow
 
-CRITICAL: You MUST return a valid JSON array with this exact structure:
-[
-  {{"order": 0, "concept_id": 2, "confidence": 0.95}},
-  {{"order": 1, "concept_id": null, "confidence": 0.45}}
-]
+Classify each chunk accurately."""
 
-Return ONLY the JSON array. No explanations. No markdown. Just the array."""
+
+# JSON Schema for Structured Outputs (guarantees valid response)
+ALIGNMENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "alignments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "order": {"type": "integer"},
+                    "concept_id": {"type": ["integer", "null"]},
+                    "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+                },
+                "required": ["order", "concept_id", "confidence"],
+                "additionalProperties": False
+            }
+        }
+    },
+    "required": ["alignments"],
+    "additionalProperties": False
+}
 
 
 def chunk_list(lst: List, size: int):
@@ -76,13 +96,14 @@ def chunk_list(lst: List, size: int):
 
 async def align_batch(elements: List[SemanticElement], concepts: List[Concept]) -> List[dict]:
     """
-    Align a batch of elements using Gemini
+    Align a batch of elements using GPT-4o-mini with Structured Outputs.
+    Brain Upgrade: Guaranteed valid JSON response.
     
     Returns list of {order, concept_id, confidence}
     """
     # Build concepts list
     concepts_list = "\n".join([
-        f"{c.id}. {c.name}" for c in concepts
+        f"{c.id}. {c.name} - {c.description or '(no description)'}" for c in concepts
     ])
     
     # Build elements JSON
@@ -98,46 +119,15 @@ async def align_batch(elements: List[SemanticElement], concepts: List[Concept]) 
         elements_json=elements_json
     )
     
-    # Call Gemini
-    response = await call_gemini_flash(prompt)
-    
-    # Parse JSON
+    # Call GPT-4o-mini with structured outputs
     try:
-        # Extract JSON from response
-        text = response.strip()
-        
-        # Remove markdown code blocks if present
-        if text.startswith("```json"):
-            text = text[7:]
-        if text.startswith("```"):
-            text = text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
-        
-        # Try to parse directly first (most common case)
-        try:
-            results = json.loads(text)
-            print(f"✅ Parsed {len(results)} alignment results")
-            return results
-        except json.JSONDecodeError:
-            # If direct parse fails, try to extract array
-            start_idx = text.find("[")
-            end_idx = text.rfind("]")
-            
-            if start_idx == -1 or end_idx == -1:
-                print(f"❌ No JSON array found. Response preview: {text[:500]}...")
-                raise ValueError("No JSON array found in response")
-            
-            json_str = text[start_idx:end_idx + 1]
-            results = json.loads(json_str)
-            print(f"✅ Parsed {len(results)} alignment results")
-            return results
+        response = await call_gpt4o_mini_structured(prompt, ALIGNMENT_SCHEMA)
+        results = response["alignments"]
+        print(f"Parsed {len(results)} alignment results")
+        return results
     except Exception as e:
-        print(f"❌ Parse error: {str(e)}")
-        print(f"❌ Response preview (first 500 chars): {response[:500]}")
-        print(f"❌ Response preview (last 500 chars): {response[-500:]}")
-        raise HTTPException(status_code=500, detail=f"Failed to parse Gemini response: {str(e)}")
+        print(f"Alignment error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Alignment failed: {str(e)}")
 
 
 @router.post("/align", response_model=AlignmentResponse)
@@ -156,7 +146,7 @@ async def align_elements(request: AlignmentRequest, db: Session = Depends(get_db
     if not concepts:
         raise HTTPException(status_code=404, detail=f"No concepts found for subject_id={request.subject_id}")
     
-    print(f"🎯 Aligning {len(request.elements)} elements to {len(concepts)} concepts")
+    print(f"Aligning {len(request.elements)} elements to {len(concepts)} concepts")
     
     # 2. Process in batches
     all_results = []
@@ -168,9 +158,9 @@ async def align_elements(request: AlignmentRequest, db: Session = Depends(get_db
             try:
                 batch_results = await align_batch(batch, concepts)
                 all_results.extend(batch_results)
-                print(f"✅ Batch {batch_idx + 1} completed")
+                print(f"Batch {batch_idx + 1} completed")
             except Exception as batch_error:
-                print(f"❌ Batch {batch_idx + 1} failed: {str(batch_error)}")
+                print(f"Batch {batch_idx + 1} failed: {str(batch_error)}")
                 # Continue with next batch instead of failing completely
                 # Add UNASSIGNED results for failed batch
                 for elem in batch:
@@ -180,7 +170,7 @@ async def align_elements(request: AlignmentRequest, db: Session = Depends(get_db
                         "confidence": 0.0
                     })
     except Exception as e:
-        print(f"❌ Fatal error during alignment: {str(e)}")
+        print(f"Fatal error during alignment: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Alignment failed: {str(e)}")
@@ -208,7 +198,7 @@ async def align_elements(request: AlignmentRequest, db: Session = Depends(get_db
             confidence=confidence
         ))
     
-    print(f"✅ Aligned: {aligned_count}, ⚠️ Unassigned: {unassigned_count}")
+    print(f"Aligned: {aligned_count}, Unassigned: {unassigned_count}")
     
     return AlignmentResponse(
         total_elements=len(request.elements),
@@ -308,11 +298,11 @@ async def align_document(request: AlignDocumentRequest, db: Session = Depends(ge
             if concept_id and concept_id in concept_to_unit:
                 c.unit_id = concept_to_unit[concept_id]
         db.commit()
-        # Update Qdrant payload so concept_id filter works
+        # Update Qdrant payload so concept_id filter works (metadata only, no vector)
         try:
             qdrant = get_qdrant_manager()
             for c in chunks:
-                if c.embedding_vector and c.vector_id:
+                if c.vector_id:
                     payload = {
                         "subject_id": db.query(Document).filter(Document.id == c.document_id).first().subject_id,
                         "document_id": c.document_id,
@@ -322,17 +312,13 @@ async def align_document(request: AlignDocumentRequest, db: Session = Depends(ge
                         "page_start": c.page_start or 0,
                         "page_end": c.page_end or 0,
                         "point_type": "chunk",
+                        "chunk_type": c.chunk_type or "text",
                         "chunk_id": c.id,
                     }
-                    qdrant.client.upsert(
-                        collection_name=qdrant.COLLECTION_NAME,
-                        points=[
-                            PointStruct(
-                                id=c.id + qdrant.CHUNK_ID_OFFSET,
-                                vector=c.embedding_vector,
-                                payload=payload,
-                            )
-                        ],
+                    qdrant.client.set_payload(
+                        collection_name=qdrant.COLLECTION_CHUNKS,
+                        payload=payload,
+                        points=[c.id + qdrant.CHUNK_ID_OFFSET],
                     )
         except Exception as e:
             print(f"⚠ Qdrant payload update for chunks failed: {str(e)}")

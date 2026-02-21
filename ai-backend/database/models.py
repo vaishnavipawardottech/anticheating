@@ -6,10 +6,19 @@ These models are the SOURCE OF TRUTH for academic structure.
 NO document references, NO embeddings, NO vectors here.
 """
 
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, Float, JSON
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, Float, JSON, Enum as SQLEnum
 from sqlalchemy.orm import relationship, backref
 from sqlalchemy.sql import func
+from sqlalchemy.dialects.postgresql import UUID, TSVECTOR
+import uuid
+import enum
 from database.database import Base
+
+
+class PaperType(str, enum.Enum):
+    """Enum for paper types"""
+    MCQ = "mcq"
+    SUBJECTIVE = "subjective"
 
 
 class Subject(Base):
@@ -196,26 +205,113 @@ class ParsedElement(Base):
         return f"<ParsedElement(id={self.id}, doc_id={self.document_id}, type='{self.element_type}', category='{self.category}')>"
 
 
+class ParentContext(Base):
+    """
+    Parent Context - Large contextual units for LLM answer generation.
+    Brain Upgrade: Stores 2000-4000 token sections/units as rich context.
+    
+    Architecture:
+    - Parents = full sections (stored in Postgres)
+    - Children = 500-token chunks (indexed in Qdrant, linked via parent_id)
+    - Search workflow: Query children → retrieve parent → feed to LLM
+    """
+    __tablename__ = "parent_contexts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    parent_type = Column(String(50), nullable=False)  # 'section', 'unit', 'chapter', 'subsection'
+    parent_index = Column(Integer, nullable=False)  # Order within document (0, 1, 2...)
+    
+    text = Column(Text, nullable=False)  # Full section text (2000-4000 tokens)
+    section_path = Column(Text, nullable=True)  # Section hierarchy
+    page_start = Column(Integer, nullable=True)
+    page_end = Column(Integer, nullable=True)
+    source_element_orders = Column(JSON, default=list, nullable=False)
+    token_count = Column(Integer, nullable=True)
+    
+    # Structure alignment
+    unit_id = Column(Integer, ForeignKey("units.id", ondelete="SET NULL"), nullable=True, index=True)
+    concept_id = Column(Integer, ForeignKey("concepts.id", ondelete="SET NULL"), nullable=True, index=True)
+    alignment_confidence = Column(Float, nullable=True)
+    
+    # Optional: Parent-level embedding (usually we only embed children)
+    embedding_vector = Column(JSON, nullable=True)
+    vector_id = Column(String(100), nullable=True, unique=True)
+    embedding_model = Column(String(100), nullable=True)  # text-embedding-3-small
+    embedding_dim = Column(Integer, nullable=True)  # 1536
+    embedded_at = Column(DateTime(timezone=True), nullable=True)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    
+    # Relationships
+    document = relationship("Document", backref=backref("parent_contexts", cascade="all, delete-orphan"))
+    unit = relationship("Unit", backref="parent_contexts")
+    concept = relationship("Concept", backref="parent_contexts")
+    
+    def __repr__(self):
+        return f"<ParentContext(id={self.id}, doc_id={self.document_id}, type='{self.parent_type}', tokens={self.token_count})>"
+
+
 class DocumentChunk(Base):
     """
-    Section-aware chunk of document content for retrieval and question generation.
-    Built from consecutive TEXT elements; carries section_path and optional unit/concept tags.
+    Child Chunk - Small semantic chunks for precise retrieval.
+    Brain Upgrade: 500-token chunks indexed in Qdrant, linked to parent via parent_id.
+    
+    Architecture:
+    - Children (this table) = 500-token chunks for precision search
+    - Parents (parent_contexts) = 2000-4000 token sections for LLM context
+    - Each child points to parent_id for context retrieval
     """
     __tablename__ = "document_chunks"
 
     id = Column(Integer, primary_key=True, index=True)
+    chunk_uuid = Column(UUID(as_uuid=True), default=uuid.uuid4, unique=True, nullable=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     chunk_index = Column(Integer, nullable=False)  # Order of chunk within document
+
+    # Parent-Child Link (Brain Upgrade)
+    parent_id = Column(Integer, ForeignKey("parent_contexts.id", ondelete="CASCADE"), nullable=True, index=True)
+    child_order = Column(Integer, nullable=True)  # Order within parent (0, 1, 2...)
 
     text = Column(Text, nullable=False)
     section_path = Column(Text, nullable=True)  # Section hierarchy; can be long for deep slide decks
     page_start = Column(Integer, nullable=True)
     page_end = Column(Integer, nullable=True)
     source_element_orders = Column(JSON, default=list, nullable=False)  # List of ParsedElement order_index
-    token_count = Column(Integer, nullable=True)  # Approx tokens for context budgeting
+    token_count = Column(Integer, nullable=True)  # Approx tokens for context budgeting (~500)
     chunk_type = Column(String(30), default="text", nullable=False)  # text, table_row, table_schema
     table_id = Column(Integer, nullable=True)  # element order of source table (for table_row/table_schema)
     row_id = Column(Integer, nullable=True)    # 0-based row index (for table_row only)
+
+    # ─── Step 7: LLM Academic Classification ─────────────────────────────────
+    # section_type: what kind of academic content this chunk contains
+    section_type = Column(String(30), nullable=True, index=True)
+    # values: definition | example | derivation | exercise | explanation | summary
+
+    # source_type: what kind of source material this chunk comes from
+    source_type = Column(String(30), nullable=True, index=True)
+    # values: syllabus | lecture_note | textbook | slide
+
+    # Bloom's Taxonomy level (keyword + integer for filtering)
+    blooms_level = Column(String(20), nullable=True, index=True)
+    # values: remember | understand | apply | analyze | evaluate | create
+    blooms_level_int = Column(Integer, nullable=True, index=True)
+    # values: 1=remember, 2=understand, 3=apply, 4=analyze, 5=evaluate, 6=create
+
+    # Difficulty classification
+    difficulty = Column(String(10), nullable=True, index=True)
+    # values: easy | medium | hard
+    difficulty_score = Column(Float, nullable=True)
+    # 0.0 (trivial) → 1.0 (very hard)
+
+    # Usage tracking: how many times this chunk has been used for question generation
+    usage_count = Column(Integer, default=0, nullable=False, server_default="0")
+
+    # ─── Step 8: BM25 Full-Text Search ───────────────────────────────────────
+    # Populated automatically by DB trigger (see migration add_chunk_search_vector.py)
+    # Declared here for ORM awareness; do NOT write to this column manually.
+    search_vector = Column(TSVECTOR, nullable=True)
+    # ─────────────────────────────────────────────────────────────────────────
 
     unit_id = Column(Integer, ForeignKey("units.id", ondelete="SET NULL"), nullable=True, index=True)
     concept_id = Column(Integer, ForeignKey("concepts.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -224,18 +320,19 @@ class DocumentChunk(Base):
     embedding_vector = Column(JSON, nullable=True)
     vector_id = Column(String(100), nullable=True, unique=True)
     indexed_at = Column(DateTime(timezone=True), nullable=True)
-    embedding_model = Column(String(100), nullable=True)
-    embedding_dim = Column(Integer, nullable=True)
+    embedding_model = Column(String(100), nullable=True)  # text-embedding-3-small
+    embedding_dim = Column(Integer, nullable=True)  # 1536
     embedded_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     document = relationship("Document", backref=backref("chunks", cascade="all, delete-orphan"))
+    parent = relationship("ParentContext", backref="children")
     unit = relationship("Unit", backref="chunks")
     concept = relationship("Concept", backref="chunks")
 
     def __repr__(self):
-        return f"<DocumentChunk(id={self.id}, doc_id={self.document_id}, chunk_index={self.chunk_index})>"
+        return f"<DocumentChunk(id={self.id}, doc_id={self.document_id}, chunk_index={self.chunk_index}, parent_id={self.parent_id})>"
 
 
 class Exam(Base):
@@ -366,3 +463,30 @@ class QuestionQualityScore(Base):
     validator_model = Column(String(100), nullable=True)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+# ==========================================
+# LAYER 4: GENERATED PAPERS (pattern-based pipeline)
+# ==========================================
+
+class GeneratedPaper(Base):
+    """
+    A complete generated question paper produced by the pattern-based pipeline.
+    Stores the full paper JSON, plus metadata for listing and retrieval.
+    """
+    __tablename__ = "generated_papers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    subject_id = Column(Integer, ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False, index=True)
+    paper_type = Column(SQLEnum(PaperType, values_callable=lambda x: [e.value for e in x]), nullable=False, default=PaperType.SUBJECTIVE, index=True)
+    pattern_text = Column(Text, nullable=True)   # Raw pattern text (or PDF reference)
+    total_marks = Column(Integer, nullable=False)
+    paper_json = Column(JSON, nullable=False)     # Full PaperOutput serialised
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    finalised = Column(Boolean, default=False, nullable=False, server_default="false")
+
+    subject = relationship("Subject", backref="generated_papers")
+
+    def __repr__(self):
+        return f"<GeneratedPaper(id={self.id}, subject_id={self.subject_id}, marks={self.total_marks})>"
