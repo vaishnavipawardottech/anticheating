@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
     ListChecks, Zap, ChevronRight, Calendar, Tag, FileSearch,
-    Trash2, AlertTriangle, X, CheckCircle
+    Trash2, AlertTriangle, X, CheckCircle, ArrowLeft
 } from 'lucide-react';
 import './AllPapers.css';
 
@@ -103,15 +103,11 @@ const MCQPapers = () => {
                 />
             )}
 
-            {/* ── Header ── */}
             <div className="ap-header">
-                <div className="ap-title-group">
-                    <ListChecks size={22} className="ap-title-icon" />
-                    <div>
-                        <h1 className="ap-title">MCQ Question Papers</h1>
-                        <p className="ap-subtitle">Multiple choice question papers</p>
-                    </div>
-                </div>
+                <button className="back-btn" onClick={() => navigate('/')} type="button" aria-label="Back">
+                    <ArrowLeft size={20} />
+                </button>
+                <h1 className="ap-title">MCQ Question Papers</h1>
                 <button className="ap-generate-btn" onClick={() => navigate('/generate-mcq')}>
                     <Zap size={16} /> Generate MCQ Paper
                 </button>

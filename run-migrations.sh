@@ -8,7 +8,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/ai-backend"
 
 echo "=== Running DB migrations ==="
-source .venv/Scripts/activate
+if [ -f .venv/bin/activate ]; then
+  source .venv/bin/activate
+else
+  source .venv/Scripts/activate
+fi
 
 echo "1. Creating tables (create_tables.py)..."
 python create_tables.py

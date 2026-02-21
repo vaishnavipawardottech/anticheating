@@ -10,7 +10,7 @@ const Profile = () => {
   };
   const user = {
     name: 'Rushikesh Ghodke',
-    email: 'rghodke@assessease.com',
+    email: 'rghodke@pareeksha.com',
     phone: '+91 9850648899',
     role: 'Admin',
     location: 'Pune, India',

@@ -129,7 +129,7 @@ const Sidebar = () => {
       <div className="sidebar-header">
         <div className="sidebar-logo">
           <span className="sidebar-logo-icon"><ClipboardList size={24} /></span>
-          <span className="sidebar-logo-text">AssessEase</span>
+          <span className="sidebar-logo-text">Pareeksha</span>
         </div>
       </div>
       <ul className="sidebar-menu">

@@ -13,7 +13,7 @@
 
 .genl-header {
   background-color: white;
-  padding: 1.5rem 2rem;
+  padding: 1rem;
   display: flex;
   align-items: center;
   gap: 1rem;
@@ -23,19 +23,11 @@
 }
 
 .genl-title {
-  font-size: 1.5rem;
+  font-size: 1rem;
   font-weight: 600;
   margin: 0;
   color: #111827;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.genl-subtitle {
-  font-size: 0.875rem;
-  color: #6B7280;
-  margin: 0.25rem 0 0 0;
+  flex: 1;
 }
 
 .back-btn {
@@ -58,8 +50,13 @@
   color: #374151;
 }
 
+.back-btn:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 97, 161, 0.1);
+}
+
 .genl-body {
-  padding: 2rem;
+  padding: 1rem 2rem;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 2rem;
@@ -207,7 +204,7 @@
 }
 
 .btn-primary:hover:not(:disabled) {
-  background-color: #004A7F;
+  background-color: #004d82;
 }
 
 .btn-primary:disabled {

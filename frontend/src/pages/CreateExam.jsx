@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Send, Sparkles, History, Trash2 } from 'lucide-react';
+import { Send, Sparkles, History, Trash2, ArrowLeft } from 'lucide-react';
 import './CreateExam.css';
 
 const API_BASE = 'http://localhost:8001';
@@ -162,12 +162,16 @@ const CreateExam = () => {
   return (
     <>
       <div className="create-exam-container">
-        <div className="create-exam-header">
-          <h1>Create Exam</h1>
-          <button className="history-btn" onClick={() => setShowHistory(!showHistory)}>
-            <History size={20} />
-          </button>
-        </div>
+        <div className="create-exam-card">
+          <div className="create-exam-header">
+            <button className="back-btn" onClick={() => navigate('/')} type="button" aria-label="Back">
+              <ArrowLeft size={20} />
+            </button>
+            <h1 className="create-exam-title">Create Exam</h1>
+            <button className="history-btn" onClick={() => setShowHistory(!showHistory)} type="button" aria-label="Chat history">
+              <History size={20} />
+            </button>
+          </div>
 
         <section className="exam-blueprint">
           <h2>Exam Blueprint</h2>
@@ -276,6 +280,7 @@ const CreateExam = () => {
             </button>
           </div>
         </form>
+        </div>
       </div>
 
       {/* History Sidebar */}

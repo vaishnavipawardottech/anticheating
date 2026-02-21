@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-    ScrollText, Zap, ChevronRight, Calendar, Tag, FileSearch,
-    Trash2, AlertTriangle, X, CheckCircle
+    Zap, ChevronRight, Calendar, Tag, FileSearch,
+    Trash2, AlertTriangle, X, CheckCircle, ArrowLeft
 } from 'lucide-react';
 import './AllPapers.css';
 
@@ -101,15 +101,11 @@ const AllPapers = () => {
                 />
             )}
 
-            {/* ── Header ── */}
             <div className="ap-header">
-                <div className="ap-title-group">
-                    <ScrollText size={22} className="ap-title-icon" />
-                    <div>
-                        <h1 className="ap-title">Question Papers</h1>
-                        <p className="ap-subtitle">All AI-generated question papers</p>
-                    </div>
-                </div>
+                <button className="back-btn" onClick={() => navigate('/')} type="button" aria-label="Back">
+                    <ArrowLeft size={20} />
+                </button>
+                <h1 className="ap-title">Question Papers</h1>
                 <button className="ap-generate-btn" onClick={() => navigate('/generate-mcq')}>
                     <Zap size={16} /> Generate New Paper
                 </button>

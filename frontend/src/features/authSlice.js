@@ -19,7 +19,7 @@ export const login = createAsyncThunk('auth/login', async ({ username, password 
                 user: {
                     _id: 'mock-user-id-123',
                     username: username,
-                    email: `${username}@assessease.com`,
+                    email: `${username}@pareeksha.com`,
                     fullName: 'Rushikesh Ghodke',
                     role: 'Admin',
                     department: 'IT Support',

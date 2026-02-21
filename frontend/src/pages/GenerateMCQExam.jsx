@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ListChecks, ArrowLeft, Zap, CheckCircle, AlertCircle, FileQuestion } from 'lucide-react';
+import { ListChecks, ArrowLeft, Zap, CheckCircle, AlertCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import './GenerateExamNL.css';
 
@@ -132,20 +132,11 @@ const GenerateMCQExam = () => {
   return (
     <div className="genl-container">
       <div className="genl-card">
-        {/* Header */}
         <div className="genl-header">
           <button className="back-btn" onClick={() => navigate('/')}>
-            <ArrowLeft size={18} />
+            <ArrowLeft size={20} />
           </button>
-          <div>
-            <h1 className="genl-title">
-              <ListChecks size={24} />
-              Generate MCQ Test
-            </h1>
-            <p className="genl-subtitle">
-              Create multiple-choice questions for quizzes and objective assessments
-            </p>
-          </div>
+          <h1 className="genl-title">Generate MCQ Test</h1>
         </div>
 
         <div className="genl-body">

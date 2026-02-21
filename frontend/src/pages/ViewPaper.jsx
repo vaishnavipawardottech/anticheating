@@ -400,22 +400,17 @@ const ViewPaper = () => {
                 {/* ── Header ── */}
                 <div className="vp-header no-print">
                     <div className="vp-header-left">
-                        <button className="back-btn" onClick={() => navigate(-1)}><ArrowLeft size={18} /></button>
-                        <div>
-                            <h1 className="vp-title">
-                                {finalised && <Lock size={14} className="finalised-icon" />}
-                                Generated Paper #{paperId}
-                                {finalised && <span className="finalised-label">Finalised</span>}
-                                {paper.paper_type && (
-                                    <span className={`paper-type-badge ${paper.paper_type}`}>
-                                        {paper.paper_type === 'mcq' ? 'MCQ' : 'Subjective'}
-                                    </span>
-                                )}
-                            </h1>
-                            <p className="vp-subtitle">
-                                {(paper.sections || []).length} question{(paper.sections || []).length !== 1 ? 's' : ''} · {paper.total_marks} mark{paper.total_marks !== 1 ? 's' : ''}
-                            </p>
-                        </div>
+                        <button className="back-btn" onClick={() => navigate(-1)}><ArrowLeft size={20} /></button>
+                        <h1 className="vp-title">
+                            {finalised && <Lock size={14} className="finalised-icon" />}
+                            Generated Paper #{paperId}
+                            {finalised && <span className="finalised-label">Finalised</span>}
+                            {paper.paper_type && (
+                                <span className={`paper-type-badge ${paper.paper_type}`}>
+                                    {paper.paper_type === 'mcq' ? 'MCQ' : 'Subjective'}
+                                </span>
+                            )}
+                        </h1>
                     </div>
                     <div className="vp-header-actions">
                         <button

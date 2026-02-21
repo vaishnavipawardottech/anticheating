@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Sparkles, ArrowLeft, Zap, CheckCircle, AlertCircle, FileQuestion } from 'lucide-react';
+import { ArrowLeft, Zap, CheckCircle, AlertCircle, FileQuestion } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import './GenerateExamNL.css';
 
@@ -124,20 +124,11 @@ const GenerateExamNL = () => {
   return (
     <div className="genl-container">
       <div className="genl-card">
-        {/* Header */}
         <div className="genl-header">
           <button className="back-btn" onClick={() => navigate('/')}>
-            <ArrowLeft size={18} />
+            <ArrowLeft size={20} />
           </button>
-          <div>
-            <h1 className="genl-title">
-              <Sparkles size={24} />
-              Natural Language Exam Generator
-            </h1>
-            <p className="genl-subtitle">
-              Describe your exam in plain English — AI will structure it for you
-            </p>
-          </div>
+          <h1 className="genl-title">Natural Language Exam Generator</h1>
         </div>
 
         <div className="genl-body">

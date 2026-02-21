@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Database, FileText, Hash, CheckCircle, AlertCircle } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Database, FileText, Hash, CheckCircle, AlertCircle, ArrowLeft } from 'lucide-react';
 import './VectorsExplorer.css';
 
 const API_BASE = 'http://localhost:8001';
 
 const VectorsExplorer = () => {
+    const navigate = useNavigate();
     const [data, setData] = useState({ elements: [], total: 0, returned: 0 });
     const [status, setStatus] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -93,11 +95,10 @@ const VectorsExplorer = () => {
     return (
         <div className="vectors-explorer">
             <div className="vectors-header">
-                <h1><Database size={24} /> Elements & chunks</h1>
-                <p className="vectors-subtitle">
-                    <strong>Elements</strong> = one row per parser block (Title, NarrativeText, ListItem…).{' '}
-                    <strong>Chunks</strong> = merged retrieval units (~500–1000 tokens, section-aware); search uses chunks. Switch View to see chunks.
-                </p>
+                <button className="back-btn" onClick={() => navigate(-1)} type="button" aria-label="Back">
+                    <ArrowLeft size={20} />
+                </button>
+                <h1 className="vectors-title">Elements & chunks</h1>
             </div>
 
             {status && (

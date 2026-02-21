@@ -103,15 +103,11 @@ const GeneratePaper = () => {
     <div className="gp-container">
       <div className="gp-card">
 
-        {/* Header */}
         <div className="gp-header">
           <button className="back-btn" onClick={() => navigate('/')}>
-            <ArrowLeft size={18} />
+            <ArrowLeft size={20} />
           </button>
-          <div>
-            <h1 className="gp-title">Generate Question Paper</h1>
-            <p className="gp-subtitle">AI-powered paper generation from your exam pattern</p>
-          </div>
+          <h1 className="gp-title">Generate Question Paper</h1>
         </div>
 
         <div className="gp-body">

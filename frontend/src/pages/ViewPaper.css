@@ -18,34 +18,37 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0.875rem 1.5rem;
+    padding: 1rem;
     border-bottom: 1px solid #E5E7EB;
     flex-shrink: 0;
+    background-color: white;
+    color: #111827;
 }
 
 .vp-header-left {
     display: flex;
     align-items: center;
-    gap: 0.875rem;
+    gap: 1rem;
 }
 
-.back-btn {
+.vp-container .back-btn {
     width: 2rem;
     height: 2rem;
     border: none;
     border-radius: 0.375rem;
-    background: #F3F4F6;
+    background-color: #F3F4F6;
     color: #0061A1;
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    transition: all 0.15s;
+    transition: all 0.2s;
     flex-shrink: 0;
 }
 
-.back-btn:hover {
-    background: #E5E7EB;
+.vp-container .back-btn:hover {
+    background-color: #E5E7EB;
+    color: #374151;
 }
 
 .vp-title {
@@ -56,6 +59,7 @@
     display: flex;
     align-items: center;
     gap: 0.375rem;
+    flex: 1;
 }
 
 .finalised-icon {

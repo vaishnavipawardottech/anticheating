@@ -126,7 +126,7 @@ Simply delete problematic documents from UI and re-upload them. The new upload w
 
 After fixing, check VectorsExplorer:
 
-1. Navigate to: **AssessEase → VectorsExplorer**
+1. Navigate to: **Pareeksha → VectorsExplorer**
 2. Set View to: **Chunks (merged, for retrieval)**
 3. Set Text to: **Full text**
 4. Filter by: **Document ID** (e.g., 55)

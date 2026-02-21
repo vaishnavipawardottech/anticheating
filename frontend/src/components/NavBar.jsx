@@ -20,7 +20,7 @@ const NavBar = () => {
 
   return (
     <div className="navbar">
-      <div className="navbar-title">AssessEase</div>
+      <div className="navbar-title">Pareeksha</div>
       <div className="navbar-right">
         <div className="navbar-avatar" onClick={handleProfileClick}>
           {user.avatar ? (

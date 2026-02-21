@@ -121,20 +121,11 @@ const GenerateSubjectiveExam = () => {
   return (
     <div className="genl-container">
       <div className="genl-card">
-        {/* Header */}
         <div className="genl-header">
           <button className="back-btn" onClick={() => navigate('/')}>
-            <ArrowLeft size={18} />
+            <ArrowLeft size={20} />
           </button>
-          <div>
-            <h1 className="genl-title">
-              <FileText size={24} />
-              Generate Subjective Exam
-            </h1>
-            <p className="genl-subtitle">
-              Create descriptive questions for comprehensive theory assessments
-            </p>
-          </div>
+          <h1 className="genl-title">Generate Subjective Exam</h1>
         </div>
 
         <div className="genl-body">
