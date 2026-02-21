@@ -73,6 +73,26 @@
     text-transform: uppercase;
 }
 
+.paper-type-badge {
+    font-size: 0.6875rem;
+    font-weight: 700;
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-left: 0.5rem;
+}
+
+.paper-type-badge.mcq {
+    background: #DBEAFE;
+    color: #1E40AF;
+}
+
+.paper-type-badge.subjective {
+    background: #FCE7F3;
+    color: #BE185D;
+}
+
 .vp-subtitle {
     font-size: 0.75rem;
     color: #6B7280;

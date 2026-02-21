@@ -388,6 +388,16 @@
     color: #374151;
 }
 
+.type-badge.mcq {
+    background: #DBEAFE;
+    color: #1E40AF;
+}
+
+.type-badge.subjective {
+    background: #FCE7F3;
+    color: #BE185D;
+}
+
 .sections-badge {
     background: #FEF3C7;
     color: #92400E;

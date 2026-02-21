@@ -6,12 +6,19 @@ These models are the SOURCE OF TRUTH for academic structure.
 NO document references, NO embeddings, NO vectors here.
 """
 
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, Float, JSON
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, Float, JSON, Enum as SQLEnum
 from sqlalchemy.orm import relationship, backref
 from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import UUID, TSVECTOR
 import uuid
+import enum
 from database.database import Base
+
+
+class PaperType(str, enum.Enum):
+    """Enum for paper types"""
+    MCQ = "mcq"
+    SUBJECTIVE = "subjective"
 
 
 class Subject(Base):
@@ -471,6 +478,7 @@ class GeneratedPaper(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     subject_id = Column(Integer, ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False, index=True)
+    paper_type = Column(SQLEnum(PaperType, values_callable=lambda x: [e.value for e in x]), nullable=False, default=PaperType.SUBJECTIVE, index=True)
     pattern_text = Column(Text, nullable=True)   # Raw pattern text (or PDF reference)
     total_marks = Column(Integer, nullable=False)
     paper_json = Column(JSON, nullable=False)     # Full PaperOutput serialised

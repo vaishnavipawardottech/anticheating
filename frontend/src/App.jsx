@@ -10,9 +10,12 @@ import IngestDocument from './pages/IngestDocument'
 import SubjectsList from './pages/SubjectsList'
 import SubjectDetail from './pages/SubjectDetail'
 import VectorsExplorer from './pages/VectorsExplorer'
-import GenerateExamNL from './pages/GenerateExamNL'
+import GenerateMCQExam from './pages/GenerateMCQExam'
+import GenerateSubjectiveExam from './pages/GenerateSubjectiveExam'
 import ViewPaper from './pages/ViewPaper'
 import AllPapers from './pages/AllPapers'
+import MCQPapers from './pages/MCQPapers'
+import SubjectivePapers from './pages/SubjectivePapers'
 import './App.css'
 
 function App() {
@@ -40,8 +43,11 @@ function App() {
               <Route path="/vectors" element={<VectorsExplorer />} />
               
               {/* Exam Generation */}
-              <Route path="/generate-nl" element={<GenerateExamNL />} />
+              <Route path="/generate-mcq" element={<GenerateMCQExam />} />
+              <Route path="/generate-subjective" element={<GenerateSubjectiveExam />} />
               <Route path="/papers" element={<AllPapers />} />
+              <Route path="/papers/mcq" element={<MCQPapers />} />
+              <Route path="/papers/subjective" element={<SubjectivePapers />} />
               <Route path="/papers/:paperId" element={<ViewPaper />} />
               
               {/* Old Exam System (deprecated, keeping for reference) */}

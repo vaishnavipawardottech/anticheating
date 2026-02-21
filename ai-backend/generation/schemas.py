@@ -115,6 +115,7 @@ class PaperOutput(BaseModel):
     """Complete generated paper."""
     paper_id: Optional[int] = None
     subject_id: int
+    paper_type: str = "subjective"  # "mcq" or "subjective"
     total_marks: int
     sections: List[PaperSection]
     created_at: Optional[datetime] = None
@@ -134,6 +135,7 @@ class GeneratePaperResponse(BaseModel):
 class PaperSummary(BaseModel):
     paper_id: int
     subject_id: int
+    paper_type: Optional[str] = None  # "mcq" | "subjective"
     total_marks: int
     sections_count: int
     created_at: Optional[datetime]
@@ -322,3 +324,4 @@ class ApproveAndGenerateRequest(BaseModel):
     subject_id: int
     spec: Dict[str, Any]           # MCQSpec or SubjectiveSpec as dict
     spec_type: str                 # "mcq" | "subjective"
+    paper_type: Optional[str] = None  # "mcq" | "subjective" - for validation

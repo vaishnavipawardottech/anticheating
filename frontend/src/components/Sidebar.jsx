@@ -22,7 +22,8 @@ import {
   ScrollText,
   FileSearch,
   Library,
-  Sparkles
+  Sparkles,
+  ListChecks
 } from 'lucide-react';
 import './Sidebar.css';
 
@@ -62,8 +63,18 @@ const Sidebar = () => {
       icon: <ScrollText size={20} />,
       text: 'Question Papers',
       submenu: [
-        { icon: <Sparkles size={18} />, text: 'Generate Exam', path: '/generate-nl' },
+        { icon: <ListChecks size={18} />, text: 'MCQ Papers', path: '/papers/mcq' },
+        { icon: <FileText size={18} />, text: 'Subjective Papers', path: '/papers/subjective' },
         { icon: <FileSearch size={18} />, text: 'All Papers', path: '/papers' },
+      ]
+    },
+    {
+      key: 'generate',
+      icon: <Sparkles size={20} />,
+      text: 'Generate Papers',
+      submenu: [
+        { icon: <ListChecks size={18} />, text: 'MCQ Test', path: '/generate-mcq' },
+        { icon: <FileText size={18} />, text: 'Subjective Exam', path: '/generate-subjective' },
       ]
     },
     {
@@ -76,16 +87,16 @@ const Sidebar = () => {
         { icon: <Calendar size={18} />, text: 'Scheduled', path: '/exams/scheduled' }
       ]
     },
-    {
-      key: 'questions',
-      icon: <HelpCircle size={20} />,
-      text: 'Question Bank',
-      submenu: [
-        { icon: <Book size={18} />, text: 'Browse Bank', path: '/questions' },
-        { icon: <Plus size={18} />, text: 'Add Question', path: '/questions/create' },
-        { icon: <FileInput size={18} />, text: 'Import Questions', path: '/questions/import' }
-      ]
-    },
+    // {
+    //   key: 'questions',
+    //   icon: <HelpCircle size={20} />,
+    //   text: 'Question Bank',
+    //   submenu: [
+    //     { icon: <Book size={18} />, text: 'Browse Bank', path: '/questions' },
+    //     { icon: <Plus size={18} />, text: 'Add Question', path: '/questions/create' },
+    //     { icon: <FileInput size={18} />, text: 'Import Questions', path: '/questions/import' }
+    //   ]
+    // },
     {
       key: 'users',
       icon: <Users size={20} />,

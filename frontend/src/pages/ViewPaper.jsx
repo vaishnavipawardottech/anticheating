@@ -406,6 +406,11 @@ const ViewPaper = () => {
                                 {finalised && <Lock size={14} className="finalised-icon" />}
                                 Generated Paper #{paperId}
                                 {finalised && <span className="finalised-label">Finalised</span>}
+                                {paper.paper_type && (
+                                    <span className={`paper-type-badge ${paper.paper_type}`}>
+                                        {paper.paper_type === 'mcq' ? 'MCQ' : 'Subjective'}
+                                    </span>
+                                )}
                             </h1>
                             <p className="vp-subtitle">
                                 {(paper.sections || []).length} question{(paper.sections || []).length !== 1 ? 's' : ''} · {paper.total_marks} mark{paper.total_marks !== 1 ? 's' : ''}

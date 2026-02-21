@@ -96,7 +96,11 @@ PARSING RULES:
 5. "short" question: marks_per_sub <= 7. "long" question: marks_per_sub >= 8
 6. If marks not specified: MCQ default = 1 mark/question, subjective default = 5 marks/sub
 7. bloom_levels: only set if teacher explicitly mentions Bloom's level or cognitive level
-8. Output ONLY the JSON object. No markdown. No explanation.
+8. **IMPORTANT for unit_distribution (MCQ)**: When distributing questions across units, split as EVENLY as possible
+   - Example: "15 MCQs from Unit 1 and 2" → split evenly: [7, 8] or [8, 7]
+   - Example: "20 MCQs from Unit 1, 2, 3" → [7, 7, 6] or [7, 6, 7] or [6, 7, 7]
+   - Unless teacher specifies exact counts per unit, always prefer even distribution
+9. Output ONLY the JSON object. No markdown. No explanation.
 """
 
 

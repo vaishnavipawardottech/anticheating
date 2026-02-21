@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from database.database import get_db
-from database.models import GeneratedPaper, Subject, Unit
+from database.models import GeneratedPaper, Subject, Unit, PaperType
 from generation.schemas import (
     PaperOutput, PaperSummary, GeneratePaperResponse, PatternInput, QuestionSpec,
     NLGenerateRequest, ParsedSpecResponse, MCQSpec, SubjectiveSpec,
@@ -238,6 +238,19 @@ async def approve_and_generate(
 
     log.info("=" * 60)
     log.info(f"[APPROVE & GENERATE START] subject={request.subject_id}, type={request.spec_type}")
+    
+    # ── Validate paper_type matches spec_type ──────────────────────────────
+    if request.paper_type:
+        if request.paper_type == "mcq" and request.spec_type != "mcq":
+            raise HTTPException(
+                status_code=400, 
+                detail="This spec will generate subjective questions. Use Subjective Exam page."
+            )
+        elif request.paper_type == "subjective" and request.spec_type == "mcq":
+            raise HTTPException(
+                status_code=400, 
+                detail="This spec will generate MCQ questions. Use MCQ Test page."
+            )
 
     # ── Parse spec from dict ────────────────────────────────────────────────
     try:
@@ -374,8 +387,13 @@ async def approve_and_generate(
     # ── Save to DB ──────────────────────────────────────────────────────────
     log.info("[DB] Saving paper...")
     paper_dict = paper.model_dump(mode="json")
+    
+    # Determine paper_type from spec_type
+    paper_type_enum = PaperType.MCQ if request.spec_type == "mcq" else PaperType.SUBJECTIVE
+    
     db_paper = GeneratedPaper(
         subject_id=request.subject_id,
+        paper_type=paper_type_enum,
         pattern_text=f"NL: {request.spec.get('type', 'unknown')} spec",
         total_marks=spec.total_marks,
         paper_json=paper_dict,
@@ -535,8 +553,20 @@ async def generate_paper(
     # ── Step 9: Store in DB ─────────────────────────────────────────────────
     log.info("[STEP 9] Saving paper to PostgreSQL...")
     paper_dict = paper.model_dump(mode="json")
+    
+    # Infer paper_type from questions
+    all_mcq = all(
+        q.question.question_type == "mcq"
+        for section in paper.sections
+        for variant in section.variants
+        for q in [variant]
+        if hasattr(q, 'question')
+    )
+    paper_type_enum = PaperType.MCQ if all_mcq else PaperType.SUBJECTIVE
+    
     db_paper = GeneratedPaper(
         subject_id=subject_id,
+        paper_type=paper_type_enum,
         pattern_text=pattern_text or (
             f"PDF: {pattern_file.filename}" if pattern_file else "unknown"
         ),
@@ -584,6 +614,7 @@ def list_papers(
         PaperSummary(
             paper_id=p.id,
             subject_id=p.subject_id,
+            paper_type=p.paper_type.value if p.paper_type else None,
             total_marks=p.total_marks,
             sections_count=len((p.paper_json or {}).get("sections", [])),
             created_at=p.created_at,

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-    ScrollText, Zap, ChevronRight, Calendar, Tag, FileSearch,
+    FileText, Zap, ChevronRight, Calendar, Tag, FileSearch,
     Trash2, AlertTriangle, X, CheckCircle
 } from 'lucide-react';
 import './AllPapers.css';
@@ -28,7 +28,7 @@ const ConfirmDialog = ({ paperId, onConfirm, onCancel, deleting }) => (
 );
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
-const AllPapers = () => {
+const SubjectivePapers = () => {
     const navigate = useNavigate();
     const [papers, setPapers] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -51,7 +51,9 @@ const AllPapers = () => {
                 return res.json();
             })
             .then(data => {
-                setPapers(Array.isArray(data) ? data : []);
+                // Filter only Subjective papers
+                const subjectivePapers = Array.isArray(data) ? data.filter(p => p.paper_type === 'subjective') : [];
+                setPapers(subjectivePapers);
                 setLoading(false);
             })
             .catch(err => {
@@ -104,14 +106,14 @@ const AllPapers = () => {
             {/* ── Header ── */}
             <div className="ap-header">
                 <div className="ap-title-group">
-                    <ScrollText size={22} className="ap-title-icon" />
+                    <FileText size={22} className="ap-title-icon" />
                     <div>
-                        <h1 className="ap-title">Question Papers</h1>
-                        <p className="ap-subtitle">All AI-generated question papers</p>
+                        <h1 className="ap-title">Subjective Question Papers</h1>
+                        <p className="ap-subtitle">Descriptive and subjective question papers</p>
                     </div>
                 </div>
-                <button className="ap-generate-btn" onClick={() => navigate('/generate-mcq')}>
-                    <Zap size={16} /> Generate New Paper
+                <button className="ap-generate-btn" onClick={() => navigate('/generate-subjective')}>
+                    <Zap size={16} /> Generate Subjective Paper
                 </button>
             </div>
 
@@ -147,10 +149,10 @@ const AllPapers = () => {
             ) : papers.length === 0 ? (
                 <div className="ap-empty">
                     <FileSearch size={48} className="ap-empty-icon" />
-                    <h2>No papers yet</h2>
-                    <p>Generate your first question paper to get started.</p>
-                    <button className="ap-generate-btn" onClick={() => navigate('/generate-mcq')}>
-                        <Zap size={16} /> Generate Paper
+                    <h2>No subjective papers yet</h2>
+                    <p>Generate your first subjective question paper to get started.</p>
+                    <button className="ap-generate-btn" onClick={() => navigate('/generate-subjective')}>
+                        <Zap size={16} /> Generate Subjective Paper
                     </button>
                 </div>
             ) : (
@@ -167,11 +169,7 @@ const AllPapers = () => {
                                             <span className="ap-badge subject-badge">
                                                 <Tag size={11} /> Subject {p.subject_id}
                                             </span>
-                                            {p.paper_type && (
-                                                <span className={`ap-badge type-badge ${p.paper_type}`}>
-                                                    {p.paper_type === 'mcq' ? 'MCQ' : 'Subjective'}
-                                                </span>
-                                            )}
+                                            <span className="ap-badge type-badge subjective">Subjective</span>
                                             <span className="ap-badge marks-badge">{p.total_marks} Marks</span>
                                             <span className="ap-badge sections-badge">
                                                 {p.sections_count ?? 0} Question{(p.sections_count ?? 0) !== 1 ? 's' : ''}
@@ -213,4 +211,4 @@ const AllPapers = () => {
     );
 };
 
-export default AllPapers;
+export default SubjectivePapers;
