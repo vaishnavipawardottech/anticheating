@@ -21,6 +21,8 @@ logging.getLogger("pdfminer").setLevel(logging.ERROR)
 logging.getLogger("PIL").setLevel(logging.ERROR)
 logging.getLogger("unstructured").setLevel(logging.WARNING)
 
+log = logging.getLogger(__name__)
+
 
 class DocumentParser:
     """
@@ -35,30 +37,38 @@ class DocumentParser:
     }
     
     @staticmethod
-    def parse_document(file_path: str, filename: str) -> List[SemanticElement]:
+    def parse_document(
+        file_path: str,
+        filename: str,
+        pdf_strategy: str = "fast",
+    ) -> List[SemanticElement]:
         """
         Parse document and extract ordered semantic elements
-        
+
         Args:
             file_path: Absolute path to document file
             filename: Original filename for traceability
-            
+            pdf_strategy: For PDF only: "fast" (text only, no image detection) or
+                "hi_res" (layout + image detection; needs unstructured[local-inference] for full support).
+                Use "hi_res" when the PDF has diagrams/figures you want to caption and index.
+
         Returns:
             List of SemanticElement objects in document order
-            
+
         Raises:
             ValueError: If file type is unsupported
             RuntimeError: If parsing fails
         """
+        log.info("Step 1 (parse): start file=%s strategy=%s", filename, pdf_strategy)
         # Determine file type from extension
         file_ext = Path(file_path).suffix.lower().lstrip(".")
-        
+
         if file_ext not in DocumentParser.SUPPORTED_TYPES:
             raise ValueError(f"Unsupported file type: {file_ext}")
-        
+
         # Use explicit parser based on file type (NOT partition_auto)
         if file_ext == "pdf":
-            elements = DocumentParser._parse_pdf(file_path)
+            elements = DocumentParser._parse_pdf(file_path, strategy=pdf_strategy)
         elif file_ext == "pptx":
             elements = DocumentParser._parse_pptx(file_path)
         elif file_ext == "docx":
@@ -75,31 +85,50 @@ class DocumentParser:
                 source_filename=filename
             )
             semantic_elements.append(semantic_element)
-        
+
+        log.info("Step 1 (parse): done elements=%s", len(semantic_elements))
         return semantic_elements
     
     @staticmethod
-    def _parse_pdf(file_path: str) -> List:
+    def _parse_pdf(file_path: str, strategy: str = "fast") -> List:
         """
-        Parse PDF using unstructured.partition.pdf
-        Explicit parser for deterministic behavior
+        Parse PDF using unstructured.partition.pdf.
+
+        - strategy="fast": text only, no image/layout detection (~100x faster).
+        - strategy="hi_res": layout + image detection (extracts Image/Table elements);
+          requires unstructured[local-inference] for full support; falls back to fast on failure.
         """
         try:
             from unstructured.partition.pdf import partition_pdf
-            
-            elements = partition_pdf(
-                filename=file_path,
-                strategy="fast",  # fast = no OCR, deterministic
-                include_page_breaks=False,  # We track page numbers via metadata
-            )
-            return elements
-            
         except ImportError:
             raise RuntimeError(
                 "PDF parsing requires: pip install unstructured[pdf]"
             )
-        except Exception as e:
-            raise RuntimeError(f"PDF parsing failed: {str(e)}")
+
+        use_hi_res = (strategy or "fast").lower() in ("hi_res", "auto")
+        if use_hi_res:
+            try:
+                elements = partition_pdf(
+                    filename=file_path,
+                    strategy=strategy if strategy else "hi_res",
+                    include_page_breaks=False,
+                )
+                return elements
+            except Exception as e:
+                logging.warning(
+                    "PDF hi_res/auto parsing failed (%s), falling back to fast. "
+                    "For image detection install: pip install unstructured[local-inference]",
+                    str(e),
+                )
+                use_hi_res = False
+
+        if not use_hi_res:
+            elements = partition_pdf(
+                filename=file_path,
+                strategy="fast",
+                include_page_breaks=False,
+            )
+        return elements
     
     @staticmethod
     def _parse_pptx(file_path: str) -> List:
@@ -281,25 +310,42 @@ class DocumentParser:
         safe_metadata = {k: v for k, v in safe_metadata.items() if v is not None}
         
         return safe_metadata
-    
+
     @staticmethod
     def get_total_pages(elements: List) -> Optional[int]:
         """
-        Extract total page count from elements
-        
-        Args:
-            elements: List of unstructured elements
-            
+        Extract total page count from elements.
+
         Returns:
             Max page number found, or None if no page numbers
         """
         max_page = None
-        
         for element in elements:
             if hasattr(element, "metadata") and hasattr(element.metadata, "page_number"):
                 page_num = element.metadata.page_number
-                if page_num is not None:
-                    if max_page is None or page_num > max_page:
-                        max_page = page_num
-        
+                if page_num is not None and (max_page is None or page_num > max_page):
+                    max_page = page_num
         return max_page
+
+
+def bbox_from_metadata(metadata: Dict[str, Any]) -> Optional[List[float]]:
+    """
+    Derive [x1, y1, x2, y2] from element metadata for use as Asset.bbox.
+    Parser already preserves coordinates in metadata["coordinates"]["points"]; this converts to bbox.
+    Returns None if metadata has no coordinates or points are invalid.
+    """
+    if not metadata or not isinstance(metadata.get("coordinates"), dict):
+        return None
+    points = metadata.get("coordinates", {}).get("points")
+    if not points or not isinstance(points, (list, tuple)):
+        return None
+    try:
+        xs = [float(p[0]) for p in points if isinstance(p, (list, tuple)) and len(p) >= 2]
+        ys = [float(p[1]) for p in points if isinstance(p, (list, tuple)) and len(p) >= 2]
+        if not xs or not ys:
+            return None
+        return [min(xs), min(ys), max(xs), max(ys)]
+    except (TypeError, ValueError):
+        return None
+
+

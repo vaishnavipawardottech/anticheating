@@ -5,9 +5,13 @@ Deterministic filters to remove noise elements before alignment
 NO AI/LLM usage - all filters are pattern-based and deterministic
 """
 
-from typing import List, Dict
-from .schemas import SemanticElement
+import logging
 import re
+from typing import List, Dict
+
+from .schemas import SemanticElement
+
+log = logging.getLogger(__name__)
 
 
 class CleanupStatistics:
@@ -194,6 +198,7 @@ class DocumentCleanup:
         Returns:
             CleanupResult with filtered elements and statistics
         """
+        log.info("Step 5 (cleanup): start elements=%s", len(elements))
         stats = CleanupStatistics()
         stats.total_elements = len(elements)
         
@@ -251,7 +256,10 @@ class DocumentCleanup:
             cleaned_elements.append(element)
         
         stats.kept_elements = len(cleaned_elements)
-        
+        log.info(
+            "Step 5 (cleanup): done removed=%s kept=%s reasons=%s",
+            stats.removed_elements, stats.kept_elements, stats.removal_reasons,
+        )
         return CleanupResult(cleaned_elements, stats)
 
 

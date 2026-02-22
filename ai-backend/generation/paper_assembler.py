@@ -66,6 +66,7 @@ def assemble_paper(
                 options=[],
                 marking_scheme=[MarkingPoint(point="Full marks for complete answer", marks=spec.marks)],
                 source_chunk_ids=[],
+                source_asset_ids=[],
                 co_mapped=co_label,
                 unit_ids=spec.units,
             )

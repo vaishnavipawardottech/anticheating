@@ -4,9 +4,14 @@ Categorizes parsed elements into: TEXT, DIAGRAM, TABLE, CODE, FORMULA, OTHER
 Uses rule-based heuristics (no AI/LLM)
 """
 
-from typing import Optional
-from .schemas import SemanticElement
+import logging
 import re
+from collections import Counter
+from typing import List, Optional
+
+from .schemas import SemanticElement
+
+log = logging.getLogger(__name__)
 
 
 class ElementCategory:
@@ -17,6 +22,20 @@ class ElementCategory:
     CODE = "CODE"
     FORMULA = "FORMULA"
     OTHER = "OTHER"
+
+
+def classify_elements(elements: List[SemanticElement]) -> None:
+    """
+    Classify all elements in place (category, is_diagram_critical).
+    Call this from the pipeline so Step 6 is logged.
+    """
+    log.info("Step 6 (classify): start elements=%s", len(elements))
+    classifier = ElementClassifier()
+    for element in elements:
+        element.category = classifier.classify(element)
+        element.is_diagram_critical = classifier.is_diagram_critical(element)
+    counts = Counter(getattr(e, "category", "OTHER") for e in elements)
+    log.info("Step 6 (classify): done categories=%s", dict(counts))
 
 
 class ElementClassifier:

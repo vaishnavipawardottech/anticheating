@@ -121,6 +121,27 @@
   cursor: not-allowed;
 }
 
+.form-input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border: 1px solid #D1D5DB;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  font-family: inherit;
+  transition: all 0.2s;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: #0061a1;
+  box-shadow: 0 0 0 3px rgba(0, 97, 161, 0.1);
+}
+
+.form-input:disabled {
+  background-color: #F9FAFB;
+  cursor: not-allowed;
+}
+
 .form-textarea {
   width: 100%;
   padding: 0.75rem 1rem;

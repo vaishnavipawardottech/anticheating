@@ -158,6 +158,9 @@ def get_subject_with_documents(subject_id: int, db: Session = Depends(get_db)):
         "name": subject.name,
         "description": subject.description,
         "created_at": subject.created_at,
+        "math_mode": getattr(subject, "math_mode", False),
+        "formula_mode": getattr(subject, "formula_mode", False),
+        "vision_budget": getattr(subject, "vision_budget", None),
         "units": [
             {
                 "id": unit.id,

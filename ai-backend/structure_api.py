@@ -6,22 +6,46 @@ This is the SOURCE OF TRUTH for academic structure.
 NO document processing, NO embeddings, NO LLM usage here.
 """
 
+from dotenv import load_dotenv
+load_dotenv()  # Ensure JWT_SECRET_KEY and other env vars are consistent across restarts
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from database.database import engine, Base
+from database.database import engine, Base, SessionLocal
+from database.models import Teacher
 from routers import subjects, units, concepts, structure_ai, documents, cleanup, alignment, documents_db, search, context, exams, questions, generation
+from routers.auth import hash_password
+
+
+def _seed_admin():
+    """Create the default admin teacher if no teachers exist."""
+    db = SessionLocal()
+    try:
+        if db.query(Teacher).count() == 0:
+            admin = Teacher(
+                email="admin@org.com",
+                hashed_password=hash_password("admin"),
+                full_name="Admin",
+                is_admin=True,
+                is_active=True,
+            )
+            db.add(admin)
+            db.commit()
+            print("✓ Default admin teacher created: admin@org.com / admin")
+    finally:
+        db.close()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     Startup and shutdown events
-    Creates database tables on startup
+    Creates database tables on startup and seeds the default admin.
     """
-    # Create all tables
     Base.metadata.create_all(bind=engine)
+    _seed_admin()
     yield
     # Cleanup on shutdown (if needed)
 
@@ -37,8 +61,8 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -58,6 +82,9 @@ app.include_router(context.router)  # Context builder for RAG
 app.include_router(exams.router)   # Exam generation
 app.include_router(questions.router)  # Layer 3: Question bank (concept-centric pipeline)
 app.include_router(generation.router)  # Layer 4: Pattern-based paper generation
+
+from routers import auth as auth_router
+app.include_router(auth_router.router)  # Teacher auth
 
 
 @app.get("/")

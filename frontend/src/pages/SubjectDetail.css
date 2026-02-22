@@ -202,3 +202,65 @@
     background-color: #004d82;
     box-shadow: 0 2px 4px rgba(0, 97, 161, 0.2);
 }
+
+/* Subject settings (math_mode, formula_mode, vision_budget) */
+.subject-settings-section .settings-row {
+    margin-bottom: 1rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+}
+.subject-settings-section .settings-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: #374151;
+}
+.subject-settings-section .settings-check input {
+    width: 1rem;
+    height: 1rem;
+}
+.subject-settings-section .settings-label {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: #374151;
+    min-width: 6rem;
+}
+.subject-settings-section .settings-input {
+    width: 5rem;
+    padding: 0.375rem 0.5rem;
+    border: 1px solid #E5E7EB;
+    border-radius: 0.375rem;
+    font-size: 0.875rem;
+}
+.subject-settings-section .settings-hint {
+    font-size: 0.75rem;
+    color: #6B7280;
+    margin-left: 0.25rem;
+    flex: 1;
+    min-width: 0;
+}
+.subject-settings-section .settings-save-btn {
+    margin-top: 0.75rem;
+    padding: 0.5rem 1rem;
+    border: none;
+    border-radius: 0.5rem;
+    background: #0061A1;
+    color: white;
+    font-size: 0.875rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+.subject-settings-section .settings-save-btn:hover:not(:disabled) {
+    background: #004d82;
+}
+.subject-settings-section .settings-save-btn:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+}

@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import { useDispatch } from 'react-redux';
+import { useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   FileText,
@@ -25,10 +27,13 @@ import {
   Sparkles,
   ListChecks
 } from 'lucide-react';
+import { logoutThunk } from '../features/authSlice';
 import './Sidebar.css';
 
 const Sidebar = () => {
   const [openMenus, setOpenMenus] = useState({});
+  const dispatch = useDispatch();
+  const navigate = useNavigate();
 
   const toggleSubmenu = (menuKey) => {
     setOpenMenus(prev => ({
@@ -168,7 +173,14 @@ const Sidebar = () => {
         ))}
       </ul>
       <div className="sidebar-footer">
-        <a href="#" onClick={(e) => { e.preventDefault(); console.log('Logout'); }} className="sidebar-menu-link logout">
+        <a
+          href="#"
+          onClick={(e) => {
+            e.preventDefault();
+            dispatch(logoutThunk()).then(() => navigate('/login', { replace: true }));
+          }}
+          className="sidebar-menu-link logout"
+        >
           <span className="sidebar-menu-icon"><LogOut size={20} /></span>
           <span className="sidebar-menu-text">Logout</span>
         </a>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ListChecks, ArrowLeft, Zap, CheckCircle, AlertCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { authFetch } from '../utils/api';
 import './GenerateExamNL.css';
 
 const API = 'http://localhost:8001';
@@ -14,6 +15,7 @@ const GenerateMCQExam = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState('');
+  const [generationInstruction, setGenerationInstruction] = useState('');
 
   const examplePrompts = [
     'Create 10 MCQs from Unit 1 and 2, 2 marks each',
@@ -82,14 +84,15 @@ const GenerateMCQExam = () => {
     setError('');
 
     try {
-      const response = await fetch(`${API}/generation/approve-and-generate`, {
+      const response = await authFetch('/generation/approve-and-generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           subject_id: preview.subject_id,
           spec_type: preview.parsed_spec.type,
           spec: preview.parsed_spec,
-          paper_type: 'mcq'  // Force MCQ type
+          paper_type: 'mcq',
+          ...(generationInstruction.trim() && { generation_instruction: generationInstruction.trim() })
         })
       });
 
@@ -115,6 +118,7 @@ const GenerateMCQExam = () => {
   const handleReset = () => {
     setPreview(null);
     setNlRequest('');
+    setGenerationInstruction('');
     setError('');
   };
 
@@ -223,6 +227,17 @@ const GenerateMCQExam = () => {
                 </button>
               ) : (
                 <>
+                  <div className="form-group" style={{ marginBottom: '12px' }}>
+                    <label className="form-label">Extra instructions (optional)</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={generationInstruction}
+                      onChange={(e) => setGenerationInstruction(e.target.value)}
+                      placeholder="e.g. Use LaTeX for equations; prefer Truth Tables"
+                      disabled={isGenerating}
+                    />
+                  </div>
                   <button
                     className="btn-primary"
                     onClick={handleApprove}

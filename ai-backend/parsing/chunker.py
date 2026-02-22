@@ -96,8 +96,10 @@ def _normalize_text(text: str) -> str:
     # Normalize different types of spaces to regular space
     text = re.sub(r'[\u00A0\u2000-\u200A\u202F\u205F]', ' ', text)
     
-    # Normalize different types of hyphens/dashes to regular hyphen
-    text = re.sub(r'[\u2010-\u2015\u2212]', '-', text)
+    # Normalize typographic hyphens/dashes to regular hyphen.
+    # U+2212 (minus sign − ) is intentionally excluded so mathematical
+    # expressions like "x − y" survive chunking with the correct minus sign.
+    text = re.sub(r'[\u2010-\u2015]', '-', text)
     
     # Normalize quotes
     text = re.sub(r'[\u201C\u201D]', '"', text)  # Smart double quotes → "

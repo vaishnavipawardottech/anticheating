@@ -55,6 +55,7 @@ class QuestionSpec(BaseModel):
     co_mapped: Optional[str] = None
     is_or_pair: bool = False
     or_pair_with: Optional[int] = None
+    require_diagram: bool = False  # When True, question must use a figure/diagram (visual chunk)
 
 
 class BlueprintSpec(BaseModel):
@@ -91,6 +92,7 @@ class GeneratedQuestion(BaseModel):
     marking_scheme: List[MarkingPoint] = Field(default_factory=list)
     # Common
     source_chunk_ids: List[int] = Field(default_factory=list)
+    source_asset_ids: List[int] = Field(default_factory=list)  # VisualChunk IDs for diagram-in-paper
     co_mapped: Optional[str] = None
     unit_ids: List[int] = Field(default_factory=list)
     human_edited: bool = False
@@ -192,6 +194,7 @@ class SubjectiveSpec(BaseModel):
     total_marks: int
     difficulty: str = "auto"
     sections: List[SubjectiveSection]
+    min_diagram_questions: int = Field(0, ge=0, description="Minimum number of questions that must use a figure/diagram")
 
     @property
     def all_unit_ids(self) -> List[int]:
@@ -219,6 +222,13 @@ class NLGenerateRequest(BaseModel):
     difficulty: Optional[str] = Field(
         None,
         description="Override difficulty: easy | medium | hard (leave blank for auto)"
+    )
+    question_type_preference: Optional[str] = Field(
+        None,
+        description=(
+            "User's preferred question type: 'mcq' | 'short' | 'long' | 'subjective' | 'mix'.\n"
+            "mcq = force MCQ; short/long = force subjective with that style; mix = subjective with mix of short and long; subjective = infer from text."
+        ),
     )
 
 
@@ -325,3 +335,10 @@ class ApproveAndGenerateRequest(BaseModel):
     spec: Dict[str, Any]           # MCQSpec or SubjectiveSpec as dict
     spec_type: str                 # "mcq" | "subjective"
     paper_type: Optional[str] = None  # "mcq" | "subjective" - for validation
+    generation_instruction: Optional[str] = Field(
+        None,
+        description=(
+            "Optional extra instructions for the model (e.g. 'Use LaTeX for equations', "
+            "'Prefer questions based on Truth Tables'). Appended to every question prompt."
+        ),
+    )

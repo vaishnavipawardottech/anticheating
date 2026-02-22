@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Upload, FileText, Zap, ArrowLeft, ChevronDown, AlertCircle, CheckCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { authFetch } from '../utils/api';
 import './GeneratePaper.css';
 
 const API = 'http://localhost:8001';
@@ -77,7 +78,7 @@ const GeneratePaper = () => {
         formData.append('pattern_file', patternFile);
       }
 
-      const res = await fetch(`${API}/generation/generate-paper`, {
+      const res = await authFetch('/generation/generate-paper', {
         method: 'POST',
         body: formData,
       });

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { FileText, ArrowLeft, Zap, CheckCircle, AlertCircle, FileQuestion } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { authFetch } from '../utils/api';
 import './GenerateExamNL.css';
 
 const API = 'http://localhost:8001';
@@ -14,9 +15,12 @@ const GenerateSubjectiveExam = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState('');
+  const [generationInstruction, setGenerationInstruction] = useState('');
 
   const examplePrompts = [
-    'Create a 30-mark paper: 3 long questions from Unit 1 to 3, 10 marks each',
+    '40 marks: 4 sections (one per unit), 3 sub-questions each, attempt any 2, 5 marks each. Include at least 2 diagram questions',
+    '40 marks: 4 sections (one per unit), 3 sub-questions each, attempt any 2, 5 marks per sub-question',
+    'Create a 30-mark paper: 3 long questions from Unit 1 to 3, 10 marks each. Guarantee 2 diagram-based questions',
     'Q1 from Unit 1, Q2 from Unit 2, Q3 from Unit 3 — 4 sub-questions each, attempt any 2, 5 marks each',
     '5 short questions from Unit 1 and 2, 4 marks each',
     '6 questions from all units, 5 marks each — attempt any 4',
@@ -82,14 +86,15 @@ const GenerateSubjectiveExam = () => {
     setError('');
 
     try {
-      const response = await fetch(`${API}/generation/approve-and-generate`, {
+      const response = await authFetch('/generation/approve-and-generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           subject_id: preview.subject_id,
           spec_type: preview.parsed_spec.type,
           spec: preview.parsed_spec,
-          paper_type: 'subjective'  // Force subjective type
+          paper_type: 'subjective',
+          ...(generationInstruction.trim() && { generation_instruction: generationInstruction.trim() })
         })
       });
 
@@ -115,6 +120,7 @@ const GenerateSubjectiveExam = () => {
   const handleReset = () => {
     setPreview(null);
     setNlRequest('');
+    setGenerationInstruction('');
     setError('');
   };
 
@@ -212,6 +218,17 @@ const GenerateSubjectiveExam = () => {
                 </button>
               ) : (
                 <>
+                  <div className="form-group" style={{ marginBottom: '12px' }}>
+                    <label className="form-label">Extra instructions (optional)</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={generationInstruction}
+                      onChange={(e) => setGenerationInstruction(e.target.value)}
+                      placeholder="e.g. Use LaTeX for equations; prefer Truth Tables"
+                      disabled={isGenerating}
+                    />
+                  </div>
                   <button
                     className="btn-primary"
                     onClick={handleApprove}

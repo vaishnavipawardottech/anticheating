@@ -95,13 +95,16 @@ class SubjectBase(BaseModel):
 
 class SubjectCreate(SubjectBase):
     """Schema for creating a new Subject"""
-    pass
+    math_mode: bool = False  # When True, backend sets formula_mode=True, vision_budget=10
 
 
 class SubjectUpdate(BaseModel):
     """Schema for updating a Subject - all fields optional"""
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
+    math_mode: Optional[bool] = None
+    formula_mode: Optional[bool] = None
+    vision_budget: Optional[int] = None
 
 
 class SubjectResponse(SubjectBase):
@@ -109,6 +112,9 @@ class SubjectResponse(SubjectBase):
     id: int
     created_at: datetime
     updated_at: Optional[datetime] = None
+    math_mode: bool = False
+    formula_mode: bool = False
+    vision_budget: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 

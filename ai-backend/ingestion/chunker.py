@@ -23,11 +23,14 @@ Strategy:
 Note: Heavy text normalization already done in Step 2 (normalizer.py)
 """
 
+import logging
+import re
 from dataclasses import dataclass, field
 from typing import List, Any, Tuple, Callable, Optional
-import re
 
 from .normalizer import normalize_text  # Import for final whitespace cleanup
+
+log = logging.getLogger(__name__)
 
 # Chunk size: character count for direct control over chunk size.
 # Production settings: balanced for context and search performance.
@@ -502,6 +505,7 @@ def chunk_elements(
     
     Result: Consistent 600-1000 char chunks with proper overlap and section context.
     """
+    log.info("Step 7 (chunk): start elements=%s", len(elements))
     normalized = prepare_for_chunking(elements)
     # section_paths are passed in, precomputed from original elements
     if section_paths is None:
@@ -635,5 +639,6 @@ def chunk_elements(
             last_chunk.source_element_orders.extend(current_orders)
             if current_page_end:
                 last_chunk.page_end = current_page_end
-    
+
+    log.info("Step 7 (chunk): done chunks=%s", len(chunks))
     return chunks

@@ -21,16 +21,68 @@ class PaperType(str, enum.Enum):
     SUBJECTIVE = "subjective"
 
 
+# ==========================================
+# AUTH: TEACHERS
+# ==========================================
+
+class Teacher(Base):
+    """
+    Teacher user account for authentication.
+    email + hashed_password for login; is_admin grants management access.
+    refresh_token stored after login, cleared on logout (for server-side revocation).
+    """
+    __tablename__ = "teachers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    full_name = Column(String(255), nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    is_admin = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    refresh_token = Column(String(512), nullable=True, index=True)  # set on login, cleared on logout
+
+    def __repr__(self):
+        return f"<Teacher(id={self.id}, email='{self.email}', is_admin={self.is_admin})>"
+
+
+class PaperShare(Base):
+    """
+    Tracks sharing of a GeneratedPaper from one teacher to another.
+    A teacher can share any paper with any other teacher.
+    """
+    __tablename__ = "paper_shares"
+
+    id = Column(Integer, primary_key=True, index=True)
+    paper_id = Column(Integer, ForeignKey("generated_papers.id", ondelete="CASCADE"), nullable=False, index=True)
+    shared_by_id = Column(Integer, ForeignKey("teachers.id", ondelete="CASCADE"), nullable=False, index=True)
+    shared_with_id = Column(Integer, ForeignKey("teachers.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    shared_by = relationship("Teacher", foreign_keys=[shared_by_id])
+    shared_with = relationship("Teacher", foreign_keys=[shared_with_id])
+
+    def __repr__(self):
+        return f"<PaperShare(paper_id={self.paper_id}, from={self.shared_by_id}, to={self.shared_with_id})>"
+
+
 class Subject(Base):
     """
-    Top-level academic subject (e.g., 'Operating Systems', 'Data Structures')
-    Defined by teacher, immutable once created
+    Top-level academic subject (e.g., 'Operating Systems', 'Discrete Mathematics').
+    Defined by teacher, immutable once created.
+    math_mode: when True, enable asset extraction + selective vision + formula-aware chunking (e.g. DM).
+    formula_mode: preserve and detect formula/math elements.
+    vision_budget: max number of "meaningful" figures to send to vision per document (e.g. 15–25); null = no cap.
     """
     __tablename__ = "subjects"
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), unique=True, nullable=False, index=True)
     description = Column(Text, nullable=True)
+    # Math/visual subject config (Phase 1)
+    math_mode = Column(Boolean, default=False, nullable=False, server_default="false")
+    formula_mode = Column(Boolean, default=False, nullable=False, server_default="false")
+    vision_budget = Column(Integer, nullable=True)  # max figures to vision per doc; null = use default/no hard cap
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -152,9 +204,41 @@ class Document(Base):
     # Relationships
     subject = relationship("Subject", backref="documents")
     elements = relationship("ParsedElement", back_populates="document", cascade="all, delete-orphan")
-    
+    assets = relationship("Asset", back_populates="document", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<Document(id={self.id}, filename='{self.filename}', status='{self.status}')>"
+
+
+class Asset(Base):
+    """
+    Extracted non-text asset from a document: image, table, or page snapshot.
+    Used for math_mode ingestion: store every figure/table; optionally enrich with vision (caption, kind, structured_json).
+    bbox: optional bounding box {x0, y0, x1, y1} or points from parser coordinates.
+    sha256: content hash for dedupe and skip re-captioning.
+    kind: set by vision enrichment: weighted_graph | unweighted_graph | tree | truth_table | venn | equation | diagram_other.
+    structured_json: graph_json, tree_json, table_md, latex from vision (extract once, reuse at generation).
+    """
+    __tablename__ = "assets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    page_no = Column(Integer, nullable=False)
+    bbox = Column(JSON, nullable=True)  # {x0,y0,x1,y1} or points list from parser
+    sha256 = Column(String(64), nullable=True, index=True)  # content hash for dedupe
+    asset_url = Column(String(500), nullable=False)  # local path (uploads/assets/...) or S3/MinIO URL
+    asset_type = Column(String(20), nullable=False, index=True)  # image | table | page_preview
+    source_element_order = Column(Integer, nullable=True)  # link to ParsedElement.order_index if from element
+    # Vision enrichment (filled when math_mode + selected for vision)
+    kind = Column(String(30), nullable=True, index=True)  # weighted_graph | tree | truth_table | equation | diagram_other
+    caption = Column(Text, nullable=True)
+    structured_json = Column(JSON, nullable=True)  # graph_json, tree_json, table_md, latex
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    document = relationship("Document", back_populates="assets")
+
+    def __repr__(self):
+        return f"<Asset(id={self.id}, doc_id={self.document_id}, page={self.page_no}, type={self.asset_type}, kind={self.kind})>"
 
 
 class ParsedElement(Base):
@@ -252,6 +336,43 @@ class ParentContext(Base):
         return f"<ParentContext(id={self.id}, doc_id={self.document_id}, type='{self.parent_type}', tokens={self.token_count})>"
 
 
+class VisualChunk(Base):
+    """
+    Visual asset from a document page/slide: diagram, table, equation, graph, tree.
+    Stored alongside text chunks; caption embedded in Qdrant for retrieval.
+    Images stored on disk (uploads/visuals/) or MinIO/S3 path in image_path.
+    """
+    __tablename__ = "visual_chunks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    page_no = Column(Integer, nullable=False)  # 1-based page/slide number
+    asset_type = Column(String(20), nullable=False, index=True)  # DIAGRAM | TABLE | EQUATION | GRAPH | TREE
+    image_path = Column(String(500), nullable=False)  # Path in uploads/visuals/ or MinIO/S3
+    caption_text = Column(Text, nullable=True)  # LLM vision summary
+    ocr_text = Column(Text, nullable=True)
+    structured_json = Column(JSON, nullable=True)  # For graphs/trees: nodes, edges, etc.
+    concept_id = Column(Integer, ForeignKey("concepts.id", ondelete="SET NULL"), nullable=True, index=True)
+    unit_id = Column(Integer, ForeignKey("units.id", ondelete="SET NULL"), nullable=True, index=True)
+    alignment_confidence = Column(Float, nullable=True)
+    usage_count = Column(Integer, default=0, nullable=False, server_default="0")
+    # Vector index (same as chunks)
+    embedding_vector = Column(JSON, nullable=True)
+    vector_id = Column(String(100), nullable=True, unique=True)
+    indexed_at = Column(DateTime(timezone=True), nullable=True)
+    embedding_model = Column(String(100), nullable=True)
+    embedding_dim = Column(Integer, nullable=True)
+    embedded_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    document = relationship("Document", backref=backref("visual_chunks", cascade="all, delete-orphan"))
+    concept = relationship("Concept", backref="visual_chunks")
+    unit = relationship("Unit", backref="visual_chunks")
+
+    def __repr__(self):
+        return f"<VisualChunk(id={self.id}, doc_id={self.document_id}, page={self.page_no}, type={self.asset_type})>"
+
+
 class DocumentChunk(Base):
     """
     Child Chunk - Small semantic chunks for precise retrieval.
@@ -278,6 +399,7 @@ class DocumentChunk(Base):
     page_start = Column(Integer, nullable=True)
     page_end = Column(Integer, nullable=True)
     source_element_orders = Column(JSON, default=list, nullable=False)  # List of ParsedElement order_index
+    source_asset_ids = Column(JSON, default=list, nullable=False)  # Phase 3: Asset IDs linked to this chunk (by element overlap)
     token_count = Column(Integer, nullable=True)  # Approx tokens for context budgeting (~500)
     chunk_type = Column(String(30), default="text", nullable=False)  # text, table_row, table_schema
     table_id = Column(Integer, nullable=True)  # element order of source table (for table_row/table_schema)
@@ -408,6 +530,7 @@ class BankQuestion(Base):
     difficulty = Column(String(5), nullable=True)  # E, M, H
     co_ids = Column(JSON, default=list, nullable=False)  # [] until CO manager
     source_chunk_ids = Column(JSON, default=list, nullable=False)
+    source_asset_ids = Column(JSON, default=list, nullable=False)  # VisualChunk IDs for diagram questions
     quality_flags = Column(JSON, nullable=True)
     generator_metadata = Column(JSON, nullable=True)
 
@@ -483,10 +606,18 @@ class GeneratedPaper(Base):
     total_marks = Column(Integer, nullable=False)
     paper_json = Column(JSON, nullable=False)     # Full PaperOutput serialised
 
+    # Teacher who created this paper (nullable for backward compatibility with existing papers)
+    teacher_id = Column(Integer, ForeignKey("teachers.id", ondelete="SET NULL"), nullable=True, index=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     finalised = Column(Boolean, default=False, nullable=False, server_default="false")
 
-    subject = relationship("Subject", backref="generated_papers")
+    subject = relationship(
+        "Subject",
+        backref=backref("generated_papers", cascade="all, delete-orphan"),
+    )
+    teacher = relationship("Teacher", foreign_keys=[teacher_id])
+    shares = relationship("PaperShare", foreign_keys="PaperShare.paper_id", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<GeneratedPaper(id={self.id}, subject_id={self.subject_id}, marks={self.total_marks})>"

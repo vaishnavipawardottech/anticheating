@@ -2,9 +2,12 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
     ArrowLeft, Download, Printer, ChevronDown, ChevronUp,
     Tag, BookOpen, Edit3, RefreshCw, Check, X, CheckCircle2,
-    AlertCircle, Loader2, Lock
+    AlertCircle, Loader2, Lock, Share2, Users
 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { useSelector } from 'react-redux';
+import { toast } from 'react-toastify';
+import { authFetch } from '../utils/api';
 import './ViewPaper.css';
 
 const API = 'http://localhost:8001';
@@ -94,7 +97,7 @@ const QuestionCard = ({
         setSaving(true);
         setError('');
         try {
-            const res = await fetch(`${API}/generation/papers/${paperId}/question`, {
+            const res = await authFetch(`/generation/papers/${paperId}/question`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -119,7 +122,7 @@ const QuestionCard = ({
         setRegenerating(true);
         setError('');
         try {
-            const res = await fetch(`${API}/generation/papers/${paperId}/regenerate-question`, {
+            const res = await authFetch(`/generation/papers/${paperId}/regenerate-question`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -313,6 +316,103 @@ const QuestionCard = ({
     );
 };
 
+// ─── Share Modal ─────────────────────────────────────────────────────────────
+
+const ShareModal = ({ paperId, onClose }) => {
+    const [teachers, setTeachers] = useState([]);
+    const [loadingTeachers, setLoadingTeachers] = useState(true);
+    const [selectedEmail, setSelectedEmail] = useState('');
+    const [sharing, setSharing] = useState(false);
+    const currentTeacher = useSelector((state) => state.auth.teacher);
+
+    useEffect(() => {
+        authFetch('/auth/teachers')
+            .then(r => r.ok ? r.json() : [])
+            .then(data => {
+                setTeachers(data.filter(t => t.email !== currentTeacher?.email));
+                setLoadingTeachers(false);
+            })
+            .catch(() => setLoadingTeachers(false));
+    }, [currentTeacher]);
+
+    const handleShare = async () => {
+        if (!selectedEmail) return;
+        setSharing(true);
+        try {
+            const res = await authFetch(`/generation/papers/${paperId}/share`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ shared_with_email: selectedEmail }),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                toast.error(err.detail || 'Failed to share paper');
+            } else {
+                const data = await res.json();
+                toast.success(`Paper shared with ${data.shared_with}`);
+                onClose();
+            }
+        } catch {
+            toast.error('Unable to share paper. Please try again.');
+        } finally {
+            setSharing(false);
+        }
+    };
+
+    return (
+        <div
+            className="share-modal-overlay"
+            onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+        >
+            <div className="share-modal">
+                <div className="share-modal-header">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <Users size={18} style={{ color: '#0061a1' }} />
+                        <h3 className="share-modal-title">Share Paper</h3>
+                    </div>
+                    <button className="share-modal-close" onClick={onClose}><X size={18} /></button>
+                </div>
+
+                <div className="share-modal-body">
+                    <p className="share-modal-hint">Select a teacher to share this paper with:</p>
+                    {loadingTeachers ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#6B7280', padding: '0.5rem 0' }}>
+                            <Loader2 size={16} className="spin" /> Loading teachers…
+                        </div>
+                    ) : teachers.length === 0 ? (
+                        <p style={{ color: '#6B7280', fontSize: '0.875rem' }}>No other teachers available.</p>
+                    ) : (
+                        <select
+                            className="share-teacher-select"
+                            value={selectedEmail}
+                            onChange={(e) => setSelectedEmail(e.target.value)}
+                        >
+                            <option value="">— Select a teacher —</option>
+                            {teachers.map(t => (
+                                <option key={t.id} value={t.email}>
+                                    {t.full_name} ({t.email})
+                                </option>
+                            ))}
+                        </select>
+                    )}
+                </div>
+
+                <div className="share-modal-footer">
+                    <button className="share-cancel-btn" onClick={onClose}>Cancel</button>
+                    <button
+                        className="share-confirm-btn"
+                        onClick={handleShare}
+                        disabled={!selectedEmail || sharing}
+                    >
+                        {sharing ? <><Loader2 size={14} className="spin" /> Sharing…</> : <><Share2 size={14} /> Share</>}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+
 // ─── Main ViewPaper ──────────────────────────────────────────────────────────
 
 const ViewPaper = () => {
@@ -324,12 +424,14 @@ const ViewPaper = () => {
     const [showAnswers, setShowAnswers] = useState(false);
     const [finalising, setFinalising] = useState(false);
     const [finalised, setFinalised] = useState(false);
+    const [showShareModal, setShowShareModal] = useState(false);
+    const isAuthenticated = useSelector((state) => state.auth.isAuthenticated);
 
     // approvals[sectionIdx][variantIdx] = true | false | null
     const [approvals, setApprovals] = useState({});
 
     useEffect(() => {
-        fetch(`${API}/generation/papers/${paperId}`)
+        authFetch(`/generation/papers/${paperId}`)
             .then(r => { if (!r.ok) throw new Error('Paper not found'); return r.json(); })
             .then(data => {
                 setPaper(data);
@@ -359,8 +461,8 @@ const ViewPaper = () => {
     const handleFinalise = async () => {
         setFinalising(true);
         try {
-            await fetch(`${API}/generation/papers/${paperId}/finalise`, { method: 'PATCH' });
-            setFinalised(true);
+            const res = await authFetch(`/generation/papers/${paperId}/finalise`, { method: 'PATCH' });
+            if (res.ok) setFinalised(true);
         } catch (e) {
             console.error(e);
         } finally {
@@ -419,12 +521,27 @@ const ViewPaper = () => {
                         >
                             {showAnswers ? 'Hide Answers' : 'Show Answers & Scheme'}
                         </button>
+
+                        {isAuthenticated && (
+                            <button
+                                className="share-paper-btn no-print"
+                                onClick={() => setShowShareModal(true)}
+                                title="Share this paper with another teacher"
+                            >
+                                <Share2 size={15} /> Share
+                            </button>
+                        )}
                         
-                        {/* PDF Export Buttons */}
+                        {/* PDF Export Buttons (authFetch so token is sent) */}
                         <button 
                             className="export-btn question-paper"
-                            onClick={() => {
-                                window.open(`${API}/generation/papers/${paperId}/export/question-paper`, '_blank');
+                            onClick={async () => {
+                                const res = await authFetch(`/generation/papers/${paperId}/export/question-paper`);
+                                if (!res.ok) return;
+                                const blob = await res.blob();
+                                const url = URL.createObjectURL(blob);
+                                window.open(url, '_blank');
+                                setTimeout(() => URL.revokeObjectURL(url), 60000);
                             }}
                             title="Download Question Paper (PDF)"
                         >
@@ -434,8 +551,13 @@ const ViewPaper = () => {
                         
                         <button 
                             className="export-btn answer-key"
-                            onClick={() => {
-                                window.open(`${API}/generation/papers/${paperId}/export/answer-key`, '_blank');
+                            onClick={async () => {
+                                const res = await authFetch(`/generation/papers/${paperId}/export/answer-key`);
+                                if (!res.ok) return;
+                                const blob = await res.blob();
+                                const url = URL.createObjectURL(blob);
+                                window.open(url, '_blank');
+                                setTimeout(() => URL.revokeObjectURL(url), 60000);
                             }}
                             title="Download Answer Key (PDF)"
                         >
@@ -445,8 +567,13 @@ const ViewPaper = () => {
                         
                         <button 
                             className="export-btn marking-scheme"
-                            onClick={() => {
-                                window.open(`${API}/generation/papers/${paperId}/export/marking-scheme`, '_blank');
+                            onClick={async () => {
+                                const res = await authFetch(`/generation/papers/${paperId}/export/marking-scheme`);
+                                if (!res.ok) return;
+                                const blob = await res.blob();
+                                const url = URL.createObjectURL(blob);
+                                window.open(url, '_blank');
+                                setTimeout(() => URL.revokeObjectURL(url), 60000);
                             }}
                             title="Download Marking Scheme (PDF)"
                         >
@@ -567,6 +694,10 @@ const ViewPaper = () => {
                     <p>Generated Paper #{paperId} · Total Marks: {paper.total_marks}</p>
                 </div>
             </div>
+
+            {showShareModal && (
+                <ShareModal paperId={paperId} onClose={() => setShowShareModal(false)} />
+            )}
         </div>
     );
 };

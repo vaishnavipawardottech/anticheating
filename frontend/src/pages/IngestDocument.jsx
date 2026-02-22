@@ -12,10 +12,12 @@ const IngestDocument = () => {
   const [existingSubjects, setExistingSubjects] = useState([]);
   const [selectedSubjectId, setSelectedSubjectId] = useState(preSelectedSubjectId || '');
   const [subjectName, setSubjectName] = useState('');
+  const [mathMode, setMathMode] = useState(false);
   const [rawToc, setRawToc] = useState('');
   const [normalizedToc, setNormalizedToc] = useState('');
   const [normalizedJson, setNormalizedJson] = useState(null); // Store the JSON structure
   const [selectedFiles, setSelectedFiles] = useState([]); // Changed to array for multiple files
+  const [maxPages, setMaxPages] = useState(''); // Optional: only ingest first N pages (e.g. 2 or 3) to save API cost
   const [isProcessingToc, setIsProcessingToc] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSavingIndex, setIsSavingIndex] = useState(false);
@@ -60,6 +62,7 @@ const IngestDocument = () => {
     // Reset fields when switching modes
     if (newMode === 'existing') {
       setSubjectName('');
+      setMathMode(false);
       setRawToc('');
       setNormalizedToc('');
       setNormalizedJson(null);
@@ -200,7 +203,7 @@ const IngestDocument = () => {
       const subjectResponse = await fetch('http://localhost:8001/subjects/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: tocData.subject, description: 'Saved from TOC' })
+        body: JSON.stringify({ name: tocData.subject, description: 'Saved from TOC', math_mode: mathMode })
       });
 
       if (!subjectResponse.ok) {
@@ -313,7 +316,7 @@ const IngestDocument = () => {
         const subjectResponse = await fetch('http://localhost:8001/subjects/', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: tocData.subject, description: 'Auto-created' })
+          body: JSON.stringify({ name: tocData.subject, description: 'Auto-created', math_mode: mathMode })
         });
 
         if (!subjectResponse.ok) {
@@ -362,7 +365,11 @@ const IngestDocument = () => {
           const formData = new FormData();
           formData.append('file', file);
           formData.append('subject_id', subjectId);
-          
+          if (maxPages.trim() !== '') {
+            const n = parseInt(maxPages, 10);
+            if (!isNaN(n) && n > 0) formData.append('max_pages', n);
+          }
+
           const uploadResp = await fetch('http://localhost:8001/documents/upload-and-store', { 
             method: 'POST', 
             body: formData 
@@ -480,7 +487,18 @@ const IngestDocument = () => {
                     required
                   />
                 </div>
-
+                <div className="form-group">
+                  <label className="form-label ingest-math-mode-label">
+                    <input
+                      type="checkbox"
+                      checked={mathMode}
+                      onChange={(e) => setMathMode(e.target.checked)}
+                      className="ingest-math-mode-check"
+                    />
+                    <span>Math Mode</span>
+                  </label>
+                  <p className="form-hint ingest-math-mode-hint">Use for math-heavy subjects (e.g. Discrete Mathematics). Preserves symbols and extracts figures.</p>
+                </div>
                 <div className="form-group">
                   <label className="form-label">Table of Contents (Raw)</label>
                   <textarea
@@ -728,6 +746,21 @@ const IngestDocument = () => {
               </div>
               
               {selectedFiles.length > 0 && (
+                <>
+                <div className="form-group" style={{ marginTop: 8 }}>
+                  <label className="form-label">Max pages (testing)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={999}
+                    placeholder="Leave empty for full document"
+                    value={maxPages}
+                    onChange={(e) => setMaxPages(e.target.value)}
+                    className="form-input"
+                    style={{ maxWidth: 120 }}
+                  />
+                  <span className="file-hint" style={{ marginLeft: 8 }}>Only ingest first N pages to save OpenAI cost (e.g. 2 or 3)</span>
+                </div>
                 <div className="selected-files-list">
                   <p className="files-count">{selectedFiles.length} file(s) selected</p>
                   {selectedFiles.map((file, index) => (
@@ -752,6 +785,7 @@ const IngestDocument = () => {
                     </div>
                   ))}
                 </div>
+                </>
               )}
             </div>
           </form>

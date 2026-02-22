@@ -1,16 +1,11 @@
 """
-Document Upload and Database Integration Endpoint  
-Handles complete 10-step ingestion pipeline:
-1. Parse (Unstructured)
-2. Normalize (Unicode/text cleanup)
-3. Caption Images (GPT-4o)
-4. Format Tables (LLM → Markdown)
-5. Cleanup (Remove noise)
-6. Classify (TEXT/DIAGRAM/CODE)
-7. Chunk (Section-aware, 600-1000 chars)
-8. Embed (all-MiniLM-L6-v2)
-9. Index (PostgreSQL + Qdrant)
-10. Align (Gemini → Concepts)
+Document Upload and Database Integration.
+
+Ingestion: Parse (fast) → Normalize → Format tables (MD) → Cleanup → Classify → Chunk → Embed → Index → Align.
+  Tables (e.g. Truth Tables in PPT) are always stored as clean Markdown.
+
+Math option (subject.math_mode=True) adds: image captioning, asset extraction, visual chunks.
+  (PDF parsing stays fast to avoid external model downloads.)
 """
 
 import os
@@ -28,13 +23,14 @@ from ingestion.normalizer import normalize_elements
 from ingestion.image_captioner import caption_images
 from ingestion.table_formatter import format_tables
 from ingestion.cleanup import cleanup_elements
-from ingestion.classifier import ElementClassifier
+from ingestion.classifier import ElementClassifier, classify_elements
 from ingestion.chunker import chunk_elements, compute_section_paths_for_elements, table_to_row_chunks
 from ingestion.schemas import SemanticElement
 from ingestion.academic_classifier import classify_chunks
+from ingestion.visual_chunks import build_visual_chunks_for_document
 
 from database.database import get_db
-from database.models import Document, ParsedElement, DocumentChunk, Concept, Unit
+from database.models import Document, ParsedElement, DocumentChunk, VisualChunk, Concept, Unit, Subject, Asset
 from database.schemas import DocumentResponse, ParsedElementResponse
 from embeddings import get_embedding_generator
 from embeddings.qdrant_manager import get_qdrant_manager
@@ -148,6 +144,7 @@ async def save_upload_file_permanent(upload_file: UploadFile, extension: str, do
 async def upload_and_store_document(
     file: UploadFile = File(..., description="Document file (PDF, PPTX, DOCX)"),
     subject_id: int = Form(..., description="Subject ID to link document to"),
+    max_pages: Optional[str] = Form(None, description="If set (e.g. 2 or 3), only ingest first N pages to save API cost"),
     db: Session = Depends(get_db)
 ):
     """
@@ -200,10 +197,13 @@ async def upload_and_store_document(
         
         print(f"   Saved to: {saved_file_path} ({file_size} bytes)")
         
-        # 4. Parse document
+        # Load subject for parse/normalize options (formula_mode, math_mode)
+        subject = db.query(Subject).filter(Subject.id == subject_id).first()
+        # 4. Parse document (always fast: no Hugging Face layout model download; Math still adds formula_mode, captioning, assets)
+        pdf_strategy = "fast"
         try:
-            elements = DocumentParser.parse_document(saved_file_path, filename)
-            print(f"   Step 1: Parsed {len(elements)} elements")
+            elements = DocumentParser.parse_document(saved_file_path, filename, pdf_strategy=pdf_strategy)
+            print(f"   Step 1: Parsed {len(elements)} elements (PDF strategy={pdf_strategy})")
         except ValueError as e:
             document.status = "failed"
             db.commit()
@@ -218,26 +218,51 @@ async def upload_and_store_document(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Document parsing failed: {str(e)}"
             )
+
+        # Optional: limit to first N pages (saves Vision/embedding cost for testing)
+        _max = None
+        if max_pages is not None and str(max_pages).strip() != "":
+            try:
+                _max = int(str(max_pages).strip())
+            except ValueError:
+                _max = 0
+        if _max is None or _max <= 0:
+            try:
+                _max = int(os.getenv("INGEST_MAX_PAGES", "0") or "0")
+            except ValueError:
+                _max = 0
+        max_pages_val = _max if _max > 0 else None
+        ingest_page_numbers = None  # when set, only these pages are rendered for assets/visuals
+        if max_pages_val is not None:
+            before = len(elements)
+            # "First N pages" = first N distinct page numbers that appear in the doc (e.g. if PDF has pages 2–30, first 3 = 2,3,4)
+            page_numbers_in_doc = sorted({e.page_number for e in elements if e.page_number is not None})
+            allowed_pages = set(page_numbers_in_doc[:max_pages_val]) if page_numbers_in_doc else set()
+            elements = [e for e in elements if e.page_number is None or e.page_number in allowed_pages]
+            ingest_page_numbers = sorted(allowed_pages)
+            print(f"   Step 1b: Limited to first {max_pages_val} page(s) (pages {ingest_page_numbers}): {len(elements)} elements (dropped {before - len(elements)})")
+
+        # 5. Normalize unicode and text (Step 2); use subject formula_mode for math-heavy subjects (e.g. DM)
+        formula_mode = getattr(subject, "formula_mode", False) if subject else False
+        elements = normalize_elements(elements, formula_mode=formula_mode)
+        print(f"   Step 2: Text normalized (formula_mode={formula_mode})")
         
-        # 5. Normalize unicode and text (NEW - Step 2)
-        elements = normalize_elements(elements)
-        print(f"   Step 2: Text normalized")
+        # 6. Caption images (Step 3) — only when Math option is on (formulas/diagrams)
+        if subject and getattr(subject, "math_mode", False):
+            try:
+                elements = await caption_images(elements, saved_file_path)
+                print(f"   Step 3: Images captioned (math_mode)")
+            except Exception as e:
+                print(f"   Step 3: Image captioning failed: {str(e)}")
+        else:
+            print(f"   Step 3: Skipped (simple mode; enable Math for diagrams)")
         
-        # 6. Caption images with GPT-4o (NEW - Step 3)
-        try:
-            elements = await caption_images(elements, saved_file_path)
-            print(f"   Step 3: Images captioned")
-        except Exception as e:
-            print(f"   Step 3: Image captioning failed: {str(e)}")
-            # Continue without image captions
-        
-        # 7. Format tables to Markdown (NEW - Step 4)
+        # 7. Format tables to Markdown (Step 4) — for all docs (Truth Tables, etc. stored neatly as MD)
         try:
             elements = await format_tables(elements, saved_file_path)
-            print(f"   Step 4: Tables formatted")
+            print(f"   Step 4: Tables formatted to Markdown")
         except Exception as e:
             print(f"   Step 4: Table formatting failed: {str(e)}")
-            # Continue with original table text
         
         # 8. Apply cleanup filters (Step 5)
         cleanup_result = cleanup_elements(elements)
@@ -247,18 +272,20 @@ async def upload_and_store_document(
         print(f"   Step 5: Cleanup - {cleanup_stats.removed_elements} removed, {cleanup_stats.kept_elements} kept")
         
         # 9. Classify elements (Step 6)
-        classifier = ElementClassifier()
-        for element in cleaned_elements:
-            element.category = classifier.classify(element)
-            element.is_diagram_critical = classifier.is_diagram_critical(element)
-        
-        # Count by category
-        category_counts = {}
-        for element in cleaned_elements:
-            cat = getattr(element, 'category', 'OTHER')
-            category_counts[cat] = category_counts.get(cat, 0) + 1
-        
-        print(f"   Step 6: Classification - {category_counts}")
+        classify_elements(cleaned_elements)
+
+        # Step 6c: Phase 2 — extract Asset rows when subject.math_mode is True (PDF only)
+        if subject and getattr(subject, "math_mode", False):
+            try:
+                from ingestion.asset_extractor import build_assets_for_document
+                await build_assets_for_document(
+                    db, document.id, saved_file_path, cleaned_elements, extension,
+                    vision_budget=getattr(subject, "vision_budget", None),
+                    page_numbers=ingest_page_numbers,
+                    subject_name=getattr(subject, "name", None),
+                )
+            except Exception as e:
+                print(f"   Step 6c: Asset extraction failed: {e}")
         
         # Step 6b: Section paths for metadata (heading stack → section_path)
         section_paths = compute_section_paths_for_elements(cleaned_elements)
@@ -277,6 +304,17 @@ async def upload_and_store_document(
                 doc_chunks.extend(table_to_row_chunks(element.text, path, page, idx))
         doc_chunks.sort(key=lambda c: (c.page_start or 0, c.source_element_orders[0] if c.source_element_orders else 0))
         print(f"   Step 5→6→7: Chunking → {len(doc_chunks)} chunks from {len(cleaned_elements)} elements")
+
+        # Step 6d: Phase 3 — attach assets to chunks, inject [[FIGURE: kind | caption]] into chunk text
+        if subject and getattr(subject, "math_mode", False):
+            try:
+                from ingestion.asset_extractor import attach_assets_to_chunks
+                chunk_asset_ids = attach_assets_to_chunks(db, document.id, doc_chunks)
+            except Exception as e:
+                print(f"   Step 6d: Attach assets to chunks failed: {e}")
+                chunk_asset_ids = [[] for _ in doc_chunks]
+        else:
+            chunk_asset_ids = [[] for _ in doc_chunks]
 
         # Step 7: LLM Academic Classification (Bloom's, difficulty, section_type, source_type)
         chunk_classifications = []
@@ -428,6 +466,7 @@ async def upload_and_store_document(
                 # Attach Step 7 classification results (safe - defaults already set)
                 clf = chunk_classifications[chunk_index] if chunk_index < len(chunk_classifications) else None
 
+                source_asset_ids = chunk_asset_ids[chunk_index] if chunk_index < len(chunk_asset_ids) else []
                 db_chunk = DocumentChunk(
                     document_id=document.id,
                     chunk_index=chunk_index,
@@ -436,6 +475,7 @@ async def upload_and_store_document(
                     page_start=cinfo.page_start,
                     page_end=cinfo.page_end,
                     source_element_orders=cinfo.source_element_orders,
+                    source_asset_ids=source_asset_ids,
                     token_count=token_count,
                     chunk_type=getattr(cinfo, "chunk_type", "text"),
                     table_id=getattr(cinfo, "table_id", None),
@@ -494,6 +534,7 @@ async def upload_and_store_document(
                         "source_type": c.source_type or "textbook",
                         "usage_count": c.usage_count or 0,
                         "chunk_id": c.id,
+                        "source_asset_ids": getattr(c, "source_asset_ids", None) or [],
                     }
                     if getattr(c, "table_id", None) is not None:
                         meta["table_id"] = c.table_id
@@ -519,6 +560,53 @@ async def upload_and_store_document(
                     print(f"   No chunk embeddings to index (skipped)")
             except Exception as e:
                 print(f"   Chunk embedding/indexing failed: {str(e)}")
+        
+        # Step 9c: Visual chunks (PDF only, Math option) — render/caption/embed diagram regions
+        if extension == "pdf" and saved_file_path and subject and getattr(subject, "math_mode", False):
+            try:
+                visual_list = await build_visual_chunks_for_document(
+                    db, document.id, saved_file_path, subject_id, extension, filename
+                )
+                if visual_list:
+                    caption_texts = [vc.caption_text or "" for vc in visual_list]
+                    emb_gen = get_embedding_generator()
+                    vis_embeddings = emb_gen.generate_embeddings_batch(caption_texts, batch_size=32)
+                    v_ids = []
+                    v_embs = []
+                    v_metas = []
+                    expected_dim = emb_gen.EMBEDDING_DIM
+                    now = datetime.now()
+                    for vc, emb in zip(visual_list, vis_embeddings):
+                        if emb is None or not isinstance(emb, list) or len(emb) != expected_dim:
+                            continue
+                        vc.embedding_vector = emb
+                        vc.embedded_at = now
+                        vc.embedding_model = emb_gen.model_name
+                        vc.embedding_dim = expected_dim
+                        v_ids.append(vc.id)
+                        v_embs.append(emb)
+                        v_metas.append({
+                            "subject_id": subject_id,
+                            "document_id": document.id,
+                            "asset_type": vc.asset_type,
+                            "unit_id": vc.unit_id,
+                            "concept_id": vc.concept_id,
+                            "page_no": vc.page_no,
+                        })
+                    if v_ids:
+                        qdrant = get_qdrant_manager()
+                        qdrant.create_collection()
+                        qdrant.index_visuals_batch(v_ids, v_embs, v_metas)
+                        for vc in visual_list:
+                            if vc.id in v_ids:
+                                vc.vector_id = f"visual_{vc.id}"
+                                vc.indexed_at = now
+                        db.commit()
+                        print(f"   Indexed {len(v_ids)} visual chunks to Qdrant")
+            except Exception as e:
+                print(f"   Visual chunk pipeline failed: {str(e)}")
+        elif extension == "pdf" and saved_file_path and (not subject or not getattr(subject, "math_mode", False)):
+            print(f"   Step 9c: Skipped (simple mode; enable Math for visual/diagram indexing)")
         
         # Step 10: Auto-align chunks to concepts (AI-powered with Gemini)
         if doc_chunks and saved_chunks:
@@ -911,8 +999,34 @@ def delete_document(document_id: int, db: Session = Depends(get_db)):
         except Exception as e:
             print(f"File deletion failed: {str(e)}")
     
-    # Delete chunks and elements first so FK is never set to NULL (avoids NotNullViolation)
+    # Delete visual chunk image files
+    visual_chunks = db.query(VisualChunk).filter(VisualChunk.document_id == document_id).all()
+    for vc in visual_chunks:
+        if vc.image_path and os.path.exists(vc.image_path):
+            try:
+                os.remove(vc.image_path)
+            except Exception as e:
+                print(f"   Could not delete visual image: {vc.image_path}: {e}")
+    # Delete Phase 2 asset files and rows
+    assets = db.query(Asset).filter(Asset.document_id == document_id).all()
+    for a in assets:
+        if a.asset_url and os.path.exists(a.asset_url):
+            try:
+                os.remove(a.asset_url)
+            except Exception as e:
+                print(f"   Could not delete asset file: {a.asset_url}: {e}")
+    try:
+        import shutil
+        from ingestion.asset_extractor import ASSETS_BASE
+        asset_dir = os.path.join(ASSETS_BASE, f"doc_{document_id}")
+        if os.path.isdir(asset_dir):
+            shutil.rmtree(asset_dir)
+    except Exception as e:
+        print(f"   Asset dir cleanup: {e}")
+    # Delete chunks, visual chunks, assets, and elements first so FK is never set to NULL
     db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).delete()
+    db.query(VisualChunk).filter(VisualChunk.document_id == document_id).delete()
+    db.query(Asset).filter(Asset.document_id == document_id).delete()
     db.query(ParsedElement).filter(ParsedElement.document_id == document_id).delete()
     db.delete(document)
     db.commit()

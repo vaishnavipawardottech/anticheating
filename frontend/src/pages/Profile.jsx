@@ -1,21 +1,20 @@
 import React from 'react';
-import { User, Mail, Phone, MapPin, Calendar, ArrowLeft } from 'lucide-react';
+import { User, Mail, Phone, MapPin, Calendar, ArrowLeft, ShieldCheck, Shield } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { useSelector } from 'react-redux';
 import './Profile.css';
 
 const Profile = () => {
   const navigate = useNavigate();
-  const handleBack = () => {
-    navigate('/dashboard');
-  };
+  const teacher = useSelector((state) => state.auth.teacher);
+
+  const handleBack = () => navigate(-1);
+
   const user = {
-    name: 'Rushikesh Ghodke',
-    email: 'rghodke@pareeksha.com',
-    phone: '+91 9850648899',
-    role: 'Admin',
-    location: 'Pune, India',
-    joinDate: 'January 15, 2024',
-    avatar: null
+    name: teacher?.full_name || 'Teacher',
+    email: teacher?.email || '',
+    role: teacher?.is_admin ? 'Admin' : 'Teacher',
+    avatar: null,
   };
 
   const getInitial = (name) => {

@@ -3,11 +3,14 @@ Table Formatting with LLM
 Step 4 in ingestion pipeline: Convert table elements to clean Markdown
 """
 
+import logging
 import os
 from typing import List, Optional
 import httpx
 
 from .schemas import SemanticElement
+
+log = logging.getLogger(__name__)
 
 
 class TableFormatter:
@@ -143,19 +146,17 @@ Return ONLY the formatted Markdown table. No explanations."""
             Elements with tables converted to Markdown
         """
         if not self.enabled:
-            print("   Table formatting skipped (API key not configured)")
+            log.info("Step 4 (format tables): skipped (API key not configured)")
             return elements
         
         table_elements = [
             (idx, elem) for idx, elem in enumerate(elements)
             if elem.element_type == "Table" and elem.text
         ]
-        
+        log.info("Step 4 (format tables): start table_elements=%s", len(table_elements))
         if not table_elements:
-            print("   No tables found to format")
+            log.info("Step 4 (format tables): done no tables to format")
             return elements
-        
-        print(f"   Formatting {len(table_elements)} tables with {self.model}...")
         
         formatted_count = 0
         for idx, element in table_elements:
@@ -186,8 +187,7 @@ Return ONLY the formatted Markdown table. No explanations."""
                 
                 formatted_count += 1
         
-        print(f"   Formatted {formatted_count}/{len(table_elements)} tables to Markdown")
-        
+        log.info("Step 4 (format tables): done formatted=%s/%s", formatted_count, len(table_elements))
         return elements
 
 

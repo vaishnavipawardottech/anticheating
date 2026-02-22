@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Zap, CheckCircle, AlertCircle, FileQuestion } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { authFetch } from '../utils/api';
 import './GenerateExamNL.css';
 
 const API = 'http://localhost:8001';
@@ -14,6 +15,8 @@ const GenerateExamNL = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState('');
+  const [generationInstruction, setGenerationInstruction] = useState('');
+  const [questionTypePreference, setQuestionTypePreference] = useState('');
 
   const examplePrompts = [
     'Create 10 MCQs from Unit 1 and 2, 2 marks each',
@@ -50,7 +53,8 @@ const GenerateExamNL = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           subject_id: parseInt(subjectId),
-          request_text: nlRequest
+          request_text: nlRequest,
+          ...(questionTypePreference && { question_type_preference: questionTypePreference })
         })
       });
 
@@ -75,13 +79,14 @@ const GenerateExamNL = () => {
     setError('');
 
     try {
-      const response = await fetch(`${API}/generation/approve-and-generate`, {
+      const response = await authFetch('/generation/approve-and-generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           subject_id: preview.subject_id,
           spec_type: preview.parsed_spec.type,
-          spec: preview.parsed_spec
+          spec: preview.parsed_spec,
+          ...(generationInstruction.trim() && { generation_instruction: generationInstruction.trim() })
         })
       });
 
@@ -107,6 +112,8 @@ const GenerateExamNL = () => {
   const handleReset = () => {
     setPreview(null);
     setNlRequest('');
+    setGenerationInstruction('');
+    setQuestionTypePreference('');
     setError('');
   };
 
@@ -159,6 +166,24 @@ const GenerateExamNL = () => {
               </select>
             </div>
 
+            {/* Question type preference */}
+            <div className="form-group">
+              <label className="form-label">Question type</label>
+              <select
+                className="form-select"
+                value={questionTypePreference}
+                onChange={(e) => setQuestionTypePreference(e.target.value)}
+                disabled={isProcessing || preview}
+              >
+                <option value="">Let AI decide from my text</option>
+                <option value="mcq">MCQ only</option>
+                <option value="short">Short answer only</option>
+                <option value="long">Long answer only</option>
+                <option value="mix">Mix (short + long)</option>
+                <option value="subjective">Subjective (infer short/long)</option>
+              </select>
+            </div>
+
             {/* NL Input */}
             <div className="form-group">
               <label className="form-label">
@@ -170,7 +195,7 @@ const GenerateExamNL = () => {
                 value={nlRequest}
                 onChange={(e) => setNlRequest(e.target.value)}
                 disabled={isProcessing || preview}
-                placeholder="E.g., Create 10 MCQs from Unit 1 and 2, 2 marks each"
+                placeholder="E.g., 10 questions from Unit 1 and 2, 5 marks each — or type freely; use dropdown above to hint question type"
               />
             </div>
 
@@ -215,6 +240,17 @@ const GenerateExamNL = () => {
                 </button>
               ) : (
                 <>
+                  <div className="form-group" style={{ marginBottom: '12px' }}>
+                    <label className="form-label">Extra instructions (optional)</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={generationInstruction}
+                      onChange={(e) => setGenerationInstruction(e.target.value)}
+                      placeholder="e.g. Use LaTeX for equations; prefer Truth Tables"
+                      disabled={isGenerating}
+                    />
+                  </div>
                   <button
                     className="btn-primary"
                     onClick={handleApprove}

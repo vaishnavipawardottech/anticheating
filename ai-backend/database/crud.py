@@ -4,6 +4,7 @@ All database operations go through these functions
 """
 
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import text
 from typing import List, Optional
 from database import models, schemas
 
@@ -13,10 +14,14 @@ from database import models, schemas
 # ==========================================
 
 def create_subject(db: Session, subject: schemas.SubjectCreate) -> models.Subject:
-    """Create a new subject"""
+    """Create a new subject. When math_mode=True, set formula_mode=True and vision_budget=10."""
+    math_mode = getattr(subject, "math_mode", False)
     db_subject = models.Subject(
         name=subject.name,
-        description=subject.description
+        description=subject.description,
+        math_mode=math_mode,
+        formula_mode=math_mode,
+        vision_budget=10 if math_mode else None,
     )
     db.add(db_subject)
     db.commit()
@@ -69,7 +74,7 @@ def update_subject(db: Session, subject_id: int, subject_update: schemas.Subject
 
 
 def delete_subject(db: Session, subject_id: int) -> bool:
-    """Delete a subject and all related data: exams, documents (chunks, elements), units, concepts."""
+    """Delete a subject and all related data: question bank, runs, exams, documents (chunks, elements), units, concepts."""
     db_subject = get_subject(db, subject_id)
     if not db_subject:
         return False
@@ -78,7 +83,34 @@ def delete_subject(db: Session, subject_id: int) -> bool:
     doc_ids = [r[0] for r in db.query(models.Document.id).filter(models.Document.subject_id == subject_id).all()]
     exam_ids = [r[0] for r in db.query(models.Exam.id).filter(models.Exam.subject_id == subject_id).all()]
 
-    from database.models import QuestionSource, Question, DocumentChunk, ParsedElement
+    from database.models import (
+        QuestionSource,
+        Question,
+        DocumentChunk,
+        ParsedElement,
+        VisualChunk,
+        BankQuestion,
+        BankQuestionSource,
+        QuestionQualityScore,
+        QuestionGenerationRun,
+    )
+
+    # Delete generated_papers via raw SQL so the ORM never tries to nullify subject_id on delete
+    db.execute(text("DELETE FROM generated_papers WHERE subject_id = :sid"), {"sid": subject_id})
+
+    # Delete question bank and related: quality scores and sources (by subject's bank questions), then runs
+    bank_q_ids = [r[0] for r in db.query(BankQuestion.id).filter(BankQuestion.subject_id == subject_id).all()]
+    if bank_q_ids:
+        db.query(QuestionQualityScore).filter(QuestionQualityScore.question_id.in_(bank_q_ids)).delete(synchronize_session=False)
+        db.query(BankQuestionSource).filter(BankQuestionSource.question_id.in_(bank_q_ids)).delete(synchronize_session=False)
+    db.query(BankQuestion).filter(BankQuestion.subject_id == subject_id).delete(synchronize_session=False)
+    db.query(QuestionGenerationRun).filter(QuestionGenerationRun.subject_id == subject_id).delete(synchronize_session=False)
+
+    # Delete visual_chunks for documents belonging to this subject
+    if doc_ids:
+        db.query(VisualChunk).filter(VisualChunk.document_id.in_(doc_ids)).delete(synchronize_session=False)
+
+    db.flush()
 
     if exam_ids:
         q_sub = db.query(models.Question.id).filter(models.Question.exam_id.in_(exam_ids))
@@ -90,6 +122,9 @@ def delete_subject(db: Session, subject_id: int) -> bool:
         db.query(DocumentChunk).filter(DocumentChunk.document_id.in_(doc_ids)).delete(synchronize_session=False)
         db.query(ParsedElement).filter(ParsedElement.document_id.in_(doc_ids)).delete(synchronize_session=False)
     db.query(models.Document).filter(models.Document.subject_id == subject_id).delete(synchronize_session=False)
+
+    # Expire subject's relationship so stale generated_papers are not used when we delete the subject
+    db.expire(db_subject, ["generated_papers"])
     db.delete(db_subject)
     db.commit()
     return True

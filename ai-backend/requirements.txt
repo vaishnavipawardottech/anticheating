@@ -41,6 +41,10 @@ uvicorn==0.40.0
 watchfiles==1.1.1
 websockets==15.0.1
 
+# Authentication
+python-jose[cryptography]>=3.3.0
+bcrypt>=4.0.0
+
 # Database drivers and ORM
 asyncpg>=0.31.0
 sqlalchemy>=2.0.0
@@ -48,7 +52,9 @@ psycopg2-binary>=2.9.0
 
 # PDF Processing
 pdfplumber
+pymupdf>=1.24.0  # PDF page render to PNG for visual chunks
 reportlab>=4.0.0  # PDF generation for exam papers
+matplotlib>=3.7.0  # Math expression rendering (LaTeX → PNG via mathtext)
 
 # Embeddings and Semantic Analysis
 sentence-transformers  # Legacy - keeping for backward compatibility during migration

@@ -4,6 +4,7 @@ import {
     FileText, Zap, ChevronRight, Calendar, Tag, FileSearch,
     Trash2, AlertTriangle, X, CheckCircle, ArrowLeft
 } from 'lucide-react';
+import { authFetch } from '../utils/api';
 import './AllPapers.css';
 
 const API = 'http://localhost:8001';
@@ -41,11 +42,11 @@ const SubjectivePapers = () => {
     const fetchPapers = useCallback((filter) => {
         setLoading(true);
         setError('');
-        const url = filter
-            ? `${API}/generation/papers?subject_id=${encodeURIComponent(filter)}&limit=50`
-            : `${API}/generation/papers?limit=50`;
+        const path = filter
+            ? `/generation/papers?subject_id=${encodeURIComponent(filter)}&limit=50`
+            : `/generation/papers?limit=50`;
 
-        fetch(url)
+        authFetch(path)
             .then(res => {
                 if (!res.ok) throw new Error(`Server error ${res.status}`);
                 return res.json();
@@ -70,7 +71,7 @@ const SubjectivePapers = () => {
     const handleDelete = async () => {
         setDeleting(true);
         try {
-            const res = await fetch(`${API}/generation/papers/${confirmId}`, { method: 'DELETE' });
+            const res = await authFetch(`/generation/papers/${confirmId}`, { method: 'DELETE' });
             if (!res.ok) throw new Error(`Delete failed: ${res.status}`);
             setPapers(prev => prev.filter(p => p.paper_id !== confirmId));
             setConfirmId(null);

@@ -33,10 +33,12 @@ class QdrantManager:
 
     COLLECTION_ELEMENTS = "academic_elements"
     COLLECTION_CHUNKS = "academic_chunks"
+    COLLECTION_VISUALS = "academic_visuals"
     COLLECTION_QUESTIONS = "question_embeddings"
     COLLECTION_NAME = "academic_elements"  # default/legacy alias for elements
     EMBEDDING_DIM = 1536  # Brain Upgrade: text-embedding-3-small (was 384)
     CHUNK_ID_OFFSET = 2**31  # Point IDs for chunks: chunk_id + OFFSET (avoids collision with element IDs)
+    VISUAL_ID_OFFSET = 2**29   # Point IDs for visual chunks: asset_id + OFFSET
     QUESTION_ID_OFFSET = 2**30  # Point IDs for questions: question_id + OFFSET
     
     def __init__(
@@ -147,6 +149,19 @@ class QdrantManager:
         )
         self._create_collection_if_needed(
             self.COLLECTION_CHUNKS, recreate=recreate, payload_indexes=chunk_indexes
+        )
+        # Visual chunks: diagram/table/equation assets indexed by caption
+        visual_indexes = [
+            ("document_id", "integer"),
+            ("subject_id", "integer"),
+            ("asset_type", "keyword"),
+            ("unit_id", "integer"),
+            ("concept_id", "integer"),
+            ("page_no", "integer"),
+            ("asset_id", "integer"),
+        ]
+        self._create_collection_if_needed(
+            self.COLLECTION_VISUALS, recreate=recreate, payload_indexes=visual_indexes
         )
         question_indexes = [
             ("subject_id", "integer"),
@@ -335,6 +350,77 @@ class QdrantManager:
         self.client.upsert(collection_name=self.COLLECTION_CHUNKS, points=points)
         print(f"Indexed {len(points)} chunks to Qdrant")
         return [str(cid) for cid in chunk_ids]
+
+    def index_visuals_batch(
+        self,
+        asset_ids: List[int],
+        embeddings: List[List[float]],
+        metadatas: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Index visual chunks (diagram/table/equation) by caption embedding.
+        Point id = asset_id + VISUAL_ID_OFFSET. Payload: asset_id, asset_type, subject_id, unit_id, concept_id, page_no.
+        """
+        if not asset_ids:
+            return
+        if len(asset_ids) != len(embeddings) or len(asset_ids) != len(metadatas):
+            raise ValueError("asset_ids, embeddings, and metadatas must have same length")
+        points = [
+            PointStruct(
+                id=aid + self.VISUAL_ID_OFFSET,
+                vector=emb,
+                payload={
+                    **meta,
+                    "point_type": "visual",
+                    "asset_id": aid,
+                },
+            )
+            for aid, emb, meta in zip(asset_ids, embeddings, metadatas)
+        ]
+        self.client.upsert(collection_name=self.COLLECTION_VISUALS, points=points)
+        print(f"Indexed {len(points)} visual chunks to Qdrant")
+
+    def search_visuals(
+        self,
+        query_vector: List[float],
+        limit: int = 5,
+        subject_id: Optional[int] = None,
+        unit_ids: Optional[List[int]] = None,
+        document_id: Optional[int] = None,
+        score_threshold: float = 0.2,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search visual chunks by caption embedding. Returns list of {asset_id, score, metadata}.
+        """
+        must = []
+        if subject_id is not None:
+            must.append(FieldCondition(key="subject_id", match=MatchValue(value=subject_id)))
+        if document_id is not None:
+            must.append(FieldCondition(key="document_id", match=MatchValue(value=document_id)))
+        if unit_ids:
+            must.append(FieldCondition(key="unit_id", match=MatchAny(any=unit_ids)))
+        search_filter = Filter(must=must) if must else None
+        try:
+            collections = self.client.get_collections().collections
+            if not any(c.name == self.COLLECTION_VISUALS for c in collections):
+                return []
+            results = self.client.search(
+                collection_name=self.COLLECTION_VISUALS,
+                query_vector=query_vector,
+                query_filter=search_filter,
+                limit=limit,
+                score_threshold=score_threshold,
+            )
+            return [
+                {
+                    "asset_id": r.payload.get("asset_id"),
+                    "score": r.score,
+                    "metadata": r.payload or {},
+                }
+                for r in results
+            ]
+        except Exception:
+            return []
     
     def search(
         self,
@@ -433,11 +519,11 @@ class QdrantManager:
         return formatted_results[:limit]
     
     def delete_by_document(self, document_id: int):
-        """Delete all vectors for a document from both chunks and elements collections."""
+        """Delete all vectors for a document from chunks, elements, and visuals collections."""
         doc_filter = Filter(
             must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]
         )
-        for coll_name in (self.COLLECTION_CHUNKS, self.COLLECTION_ELEMENTS):
+        for coll_name in (self.COLLECTION_CHUNKS, self.COLLECTION_ELEMENTS, self.COLLECTION_VISUALS):
             try:
                 collections = self.client.get_collections().collections
                 if not any(c.name == coll_name for c in collections):

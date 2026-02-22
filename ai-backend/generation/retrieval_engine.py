@@ -14,7 +14,7 @@ from typing import List, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from database.models import DocumentChunk, Document
+from database.models import DocumentChunk, Document, VisualChunk, ParsedElement
 from embeddings import get_embedding_generator
 from embeddings.qdrant_manager import get_qdrant_manager
 from generation.schemas import QuestionSpec
@@ -255,6 +255,22 @@ def retrieve_chunks_for_spec(
         except Exception:
             pass
 
+    # Last resort: subject-only, no unit filter (helps when chunk unit_id doesn't match blueprint units)
+    if not merged:
+        subject_only_params: dict = {"sid": subject_id}
+        subject_only_clauses = ["d.subject_id = :sid"]
+        if excluded:
+            subject_only_clauses.append("c.id != ALL(:excluded)")
+            subject_only_params["excluded"] = list(excluded)
+        subject_only_where = " AND ".join(subject_only_clauses)
+        subject_only_sql = f"SELECT c.id FROM document_chunks c JOIN documents d ON d.id = c.document_id WHERE {subject_only_where} ORDER BY RANDOM() LIMIT {MAX_CANDIDATES}"
+        try:
+            rows = db.execute(text(subject_only_sql), subject_only_params).fetchall()
+            for i, (cid,) in enumerate(rows, start=1):
+                merged[cid] = 1.0 / (RRF_K + i)
+        except Exception:
+            pass
+
     if not merged:
         return []
 
@@ -287,3 +303,94 @@ def retrieve_chunks_for_spec(
 
     selected = mmr_select(candidates, query_vector_for_mmr, k=top_k)
     return [s["chunk"] for s in selected]
+
+
+def retrieve_visual_chunks_for_spec(
+    db: Session,
+    spec: QuestionSpec,
+    subject_id: int,
+    top_k: int = 2,
+) -> List[VisualChunk]:
+    """
+    Retrieve up to top_k visual chunks (diagrams/figures) relevant to the question spec.
+    Used for subjective/diagram-heavy units so generated questions can reference a figure.
+    """
+    if not spec.units:
+        return []
+    try:
+        gen = get_embedding_generator()
+        query_text = f"{spec.nature or ''} {' '.join(spec.bloom_targets)} diagram figure graph"
+        query_vector = gen.generate_embedding(query_text)
+        qdrant = get_qdrant_manager()
+        raw = qdrant.search_visuals(
+            query_vector=query_vector,
+            limit=top_k,
+            subject_id=subject_id,
+            unit_ids=spec.units,
+            score_threshold=0.15,
+        )
+        asset_ids = [r["asset_id"] for r in raw if r.get("asset_id") is not None]
+        if not asset_ids:
+            return []
+        visuals = db.query(VisualChunk).filter(VisualChunk.id.in_(asset_ids)).all()
+        # Preserve order from search
+        id_to_v = {v.id: v for v in visuals}
+        return [id_to_v[aid] for aid in asset_ids if aid in id_to_v]
+    except Exception as e:
+        print(f"[Retrieval] Visual search error: {e}")
+        return []
+
+
+def get_table_markdown_for_chunks(
+    db: Session,
+    chunks: List[DocumentChunk],
+    max_tables: int = 5,
+    max_chars: int = 4000,
+) -> str:
+    """
+    Chunks store tables as table_row/table_schema (row-level text), not full Markdown.
+    Fetch full table Markdown from ParsedElement (category=TABLE) for any chunk that
+    references a table, so generation can use proper tables in context.
+    """
+    pairs = set()
+    for c in chunks:
+        ct = getattr(c, "chunk_type", "text")
+        if ct not in ("table_row", "table_schema"):
+            continue
+        tid = getattr(c, "table_id", None)
+        if tid is None:
+            continue
+        pairs.add((c.document_id, tid))
+    if not pairs:
+        return ""
+    doc_ids = list({p[0] for p in pairs})
+    order_indices = list({p[1] for p in pairs})
+    try:
+        rows = (
+            db.query(ParsedElement.text)
+            .filter(
+                ParsedElement.document_id.in_(doc_ids),
+                ParsedElement.order_index.in_(order_indices),
+                ParsedElement.category == "TABLE",
+                ParsedElement.text.isnot(None),
+                ParsedElement.text != "",
+            )
+            .limit(max_tables)
+            .all()
+        )
+        texts = []
+        total = 0
+        for (text,) in rows:
+            if not text or not text.strip():
+                continue
+            t = text.strip()
+            if total + len(t) > max_chars:
+                break
+            texts.append(t)
+            total += len(t)
+        if not texts:
+            return ""
+        return "\n\n---\n\n".join(texts)
+    except Exception as e:
+        print(f"[Retrieval] Table MD fetch error: {e}")
+        return ""

@@ -1,33 +1,23 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useSelector } from 'react-redux';
 import './NavBar.css';
 
 const NavBar = () => {
   const navigate = useNavigate();
-  const user = {
-    name: 'Rushikesh Ghodke',
-    email: 'admin@smartassessment.com',
-    avatar: null
-  };
+  const teacher = useSelector((state) => state.auth.teacher);
 
-  const getInitial = (name) => {
-    return name.charAt(0).toUpperCase();
-  };
+  const displayName = teacher?.full_name || teacher?.email || 'User';
 
-  const handleProfileClick = () => {
-    navigate('/profile');
-  };
+  const getInitial = (name) => name.charAt(0).toUpperCase();
 
   return (
     <div className="navbar">
       <div className="navbar-title">Pareeksha</div>
       <div className="navbar-right">
-        <div className="navbar-avatar" onClick={handleProfileClick}>
-          {user.avatar ? (
-            <img src={user.avatar} alt={user.name} />
-          ) : (
-            getInitial(user.name)
-          )}
+        <span className="navbar-username">{displayName}</span>
+        <div className="navbar-avatar" onClick={() => navigate('/profile')} title={displayName}>
+          {getInitial(displayName)}
         </div>
       </div>
     </div>

@@ -993,6 +993,136 @@
     color: #6B7280;
 }
 
+/* ─── Share Button ───────────────────────────────────────────────────────── */
+.share-paper-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.4rem 0.875rem;
+    background: #ffffff;
+    border: 1.5px solid #0061a1;
+    color: #0061a1;
+    border-radius: 0.375rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.share-paper-btn:hover {
+    background: #0061a1;
+    color: #ffffff;
+}
+
+/* ─── Share Modal ────────────────────────────────────────────────────────── */
+.share-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+}
+
+.share-modal {
+    background: #ffffff;
+    border-radius: 0.75rem;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.18);
+    width: 100%;
+    max-width: 420px;
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+.share-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.share-modal-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #111827;
+    margin: 0;
+}
+
+.share-modal-close {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: #6B7280;
+    padding: 0.25rem;
+    border-radius: 0.25rem;
+    display: flex;
+    align-items: center;
+    transition: color 0.15s;
+}
+.share-modal-close:hover { color: #111827; }
+
+.share-modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.share-modal-hint {
+    font-size: 0.875rem;
+    color: #374151;
+    margin: 0;
+}
+
+.share-teacher-select {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #D1D5DB;
+    border-radius: 0.375rem;
+    font-size: 0.875rem;
+    color: #111827;
+    background: #ffffff;
+    outline: none;
+    transition: border-color 0.15s;
+}
+.share-teacher-select:focus { border-color: #0061a1; box-shadow: 0 0 0 2px rgba(0,97,161,0.12); }
+
+.share-modal-footer {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: flex-end;
+}
+
+.share-cancel-btn {
+    padding: 0.45rem 1rem;
+    border: 1px solid #D1D5DB;
+    background: #ffffff;
+    color: #374151;
+    border-radius: 0.375rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.share-cancel-btn:hover { background: #F3F4F6; }
+
+.share-confirm-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.45rem 1.125rem;
+    background: #0061a1;
+    color: #ffffff;
+    border: none;
+    border-radius: 0.375rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.share-confirm-btn:hover:not(:disabled) { background: #004d82; }
+.share-confirm-btn:disabled { background: #9CA3AF; cursor: not-allowed; }
+
 /* ─── Print ───────────────────────────────────────────────────────────────── */
 .print-footer {
     display: none;

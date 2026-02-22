@@ -15,10 +15,12 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Form, UploadFile, File
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from sqlalchemy import or_
+from pydantic import BaseModel, EmailStr
 
 from database.database import get_db
-from database.models import GeneratedPaper, Subject, Unit, PaperType
+from database.models import GeneratedPaper, Subject, Unit, PaperType, VisualChunk, Teacher, PaperShare
+from routers.auth import get_current_teacher
 from generation.schemas import (
     PaperOutput, PaperSummary, GeneratePaperResponse, PatternInput, QuestionSpec,
     NLGenerateRequest, ParsedSpecResponse, MCQSpec, SubjectiveSpec,
@@ -26,7 +28,11 @@ from generation.schemas import (
 )
 from generation.pattern_interpreter import interpret_pattern, interpret_pattern_from_pdf
 from generation.blueprint_builder import build_blueprint
-from generation.retrieval_engine import retrieve_chunks_for_spec
+from generation.retrieval_engine import (
+    retrieve_chunks_for_spec,
+    retrieve_visual_chunks_for_spec,
+    get_table_markdown_for_chunks,
+)
 from generation.question_generator import generate_question
 from generation.co_mapper import map_co, get_co_map_for_subject
 from generation.paper_assembler import assemble_paper
@@ -177,6 +183,7 @@ async def process_prompt(
             subject_id=request.subject_id,
             db=db,
             difficulty_override=request.difficulty,
+            question_type_preference=request.question_type_preference,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=f"NL interpretation failed: {e}")
@@ -206,6 +213,7 @@ async def process_prompt(
 @router.post("/approve-and-generate", response_model=GeneratePaperResponse)
 async def approve_and_generate(
     request: ApproveAndGenerateRequest,
+    current_teacher: Teacher = Depends(get_current_teacher),
     db: Session = Depends(get_db),
 ):
     """
@@ -288,17 +296,20 @@ async def approve_and_generate(
     else:  # SubjectiveSpec
         # Subjective: Create specs for each sub-question in each section
         question_no = 1
+        min_diagram = getattr(spec, "min_diagram_questions", 0) or 0
         for section in spec.sections:
             for _ in range(section.sub_questions):
+                require_diagram = min_diagram > 0 and question_no <= min_diagram
                 question_specs.append(
                     QuestionSpec(
                         question_no=question_no,
                         units=[section.unit_id],
                         marks=section.marks_per_sub,
-                        bloom_targets=["understand", "apply"],  # Default for subjective
+                        bloom_targets=["understand", "apply"],
                         difficulty=spec.difficulty,
                         question_type="descriptive",
-                        nature=section.question_type,  # "short" or "long"
+                        nature=section.question_type,
+                        require_diagram=require_diagram,
                     )
                 )
                 question_no += 1
@@ -325,7 +336,7 @@ async def approve_and_generate(
         log.info(f"[Q{spec_item.question_no}] Got {len(chunks)} chunks")
 
         if not chunks:
-            log.warning(f"[Q{spec_item.question_no}] No chunks, trying fallback...")
+            log.warning(f"[Q{spec_item.question_no}] No chunks, trying fallback (any unit)...")
             fallback_spec = QuestionSpec(
                 question_no=spec_item.question_no,
                 units=[],
@@ -335,18 +346,74 @@ async def approve_and_generate(
                 question_type=spec_item.question_type,
             )
             chunks = retrieve_chunks_for_spec(
-                db, fallback_spec, request.subject_id, 
-                top_k=6, 
-                exclude_chunk_ids=used_chunk_ids_this_run
+                db, fallback_spec, request.subject_id,
+                top_k=6,
+                exclude_chunk_ids=used_chunk_ids_this_run,
             )
             log.info(f"[Q{spec_item.question_no}] Fallback got {len(chunks)} chunks")
+        if not chunks and used_chunk_ids_this_run:
+            log.warning(f"[Q{spec_item.question_no}] Pool exhausted ({len(used_chunk_ids_this_run)} used), allowing re-use with penalty...")
+            reuse_spec = QuestionSpec(
+                question_no=spec_item.question_no,
+                units=[],
+                marks=spec_item.marks,
+                bloom_targets=spec_item.bloom_targets,
+                difficulty=spec_item.difficulty,
+                question_type=spec_item.question_type,
+            )
+            chunks = retrieve_chunks_for_spec(
+                db, reuse_spec, request.subject_id,
+                top_k=6,
+                exclude_chunk_ids=[],
+            )
+            log.info(f"[Q{spec_item.question_no}] Re-use got {len(chunks)} chunks")
 
         used_chunk_ids_this_run.extend(c.id for c in chunks)
+
+        # Retrieve visual chunks: always for require_diagram; optional for other descriptive
+        visual_chunks = []
+        if spec_item.question_type == "descriptive" and (spec_item.units or getattr(spec_item, "require_diagram", False)):
+            top_k_visual = 4 if getattr(spec_item, "require_diagram", False) else (3 if getattr(subject, "math_mode", False) else 2)
+            visual_chunks = retrieve_visual_chunks_for_spec(
+                db, spec_item, request.subject_id, top_k=top_k_visual
+            )
+            if getattr(spec_item, "require_diagram", False) and not visual_chunks:
+                all_unit_ids = [u.id for u in db.query(Unit).filter(Unit.subject_id == request.subject_id).order_by(Unit.order).all()]
+                if all_unit_ids:
+                    fallback_spec = QuestionSpec(
+                        question_no=spec_item.question_no,
+                        units=all_unit_ids,
+                        marks=spec_item.marks,
+                        bloom_targets=spec_item.bloom_targets,
+                        difficulty=spec_item.difficulty,
+                        question_type="descriptive",
+                    )
+                    visual_chunks = retrieve_visual_chunks_for_spec(db, fallback_spec, request.subject_id, top_k=4)
+                    if visual_chunks:
+                        log.info(f"[Q{spec_item.question_no}] Diagram fallback: got {len(visual_chunks)} visual(s) from any unit")
+            if visual_chunks:
+                log.info(f"[Q{spec_item.question_no}] Using {len(visual_chunks)} visual chunk(s)")
+
+        # Table MD: chunks store table rows, not full Markdown; fetch from ParsedElement for context
+        table_md = get_table_markdown_for_chunks(db, chunks)
+
+        # Extra instruction: diagram-required + math_mode preference
+        extra_instruction = request.generation_instruction or ""
+        if getattr(spec_item, "require_diagram", False) and visual_chunks:
+            extra_instruction = (extra_instruction.strip() + "\n" if extra_instruction.strip() else "") + "This question MUST be based on the provided figure/diagram. The question must explicitly refer to the diagram; the answer key must reference it. Do not ask a generic text-only question."
+        if getattr(subject, "math_mode", False) and extra_instruction.strip() and "MUST be based" not in extra_instruction:
+            extra_instruction = extra_instruction.strip() + "\nWhen context includes tables or figures, prefer questions that use them (e.g. interpret a table, refer to a diagram)."
+        elif getattr(subject, "math_mode", False) and not extra_instruction.strip():
+            extra_instruction = "When context includes tables or figures, prefer questions that use them (e.g. interpret a table, refer to a diagram)."
 
         # Generate question
         log.info(f"[Q{spec_item.question_no}] Generating {spec_item.question_type} ({spec_item.marks}M)...")
         try:
-            generated = await generate_question(spec_item, chunks)
+            generated = await generate_question(
+                spec_item, chunks, visual_chunks=visual_chunks,
+                extra_instruction=extra_instruction.strip() or None,
+                table_markdown_context=table_md or None,
+            )
             generated.co_mapped = spec_item.co_mapped
             log.info(f"[Q{spec_item.question_no}] OK — bloom={generated.bloom_level}")
         except Exception as e:
@@ -362,6 +429,7 @@ async def approve_and_generate(
                 options=[],
                 marking_scheme=[MarkingPoint(point="Full answer", marks=spec_item.marks)],
                 source_chunk_ids=[c.id for c in chunks],
+                source_asset_ids=[],
                 co_mapped=spec_item.co_mapped,
                 unit_ids=spec_item.units,
             )
@@ -398,11 +466,12 @@ async def approve_and_generate(
         total_marks=spec.total_marks,
         paper_json=paper_dict,
         finalised=False,
+        teacher_id=current_teacher.id,
     )
     db.add(db_paper)
     db.commit()
     db.refresh(db_paper)
-    log.info(f"[DB] Saved as paper_id={db_paper.id}")
+    log.info(f"[DB] Saved as paper_id={db_paper.id} (owner={current_teacher.id})")
 
     # ── Usage tracking ──────────────────────────────────────────────────────
     paper.paper_id = db_paper.id
@@ -432,6 +501,7 @@ async def generate_paper(
     pattern_text: Optional[str] = Form(None, description="Pattern as plain text"),
     difficulty_preference: Optional[str] = Form(None, description="easy | medium | hard | auto"),
     pattern_file: Optional[UploadFile] = File(None, description="Pattern as PDF file"),
+    current_teacher: Teacher = Depends(get_current_teacher),
     db: Session = Depends(get_db),
 ):
     """
@@ -507,14 +577,38 @@ async def generate_paper(
             )
             chunks = retrieve_chunks_for_spec(db, fallback_spec, subject_id, top_k=6, exclude_chunk_ids=used_chunk_ids_this_run)
             log.info(f"[STEP 3] Q{spec.question_no}: Fallback got {len(chunks)} chunks")
+        if not chunks and used_chunk_ids_this_run:
+            log.warning(f"[STEP 3] Q{spec.question_no}: Pool exhausted ({len(used_chunk_ids_this_run)} used), allowing re-use with penalty...")
+            reuse_spec = QuestionSpec(
+                question_no=spec.question_no,
+                units=[],
+                marks=spec.marks,
+                bloom_targets=spec.bloom_targets,
+                difficulty=spec.difficulty,
+                nature=spec.nature,
+                question_type=spec.question_type,
+            )
+            chunks = retrieve_chunks_for_spec(db, reuse_spec, subject_id, top_k=6, exclude_chunk_ids=[])
+            log.info(f"[STEP 3] Q{spec.question_no}: Re-use got {len(chunks)} chunks")
 
         # Mark these chunks as used for subsequent questions
         used_chunk_ids_this_run.extend(c.id for c in chunks)
 
+        # Optional: retrieve visual chunks for subjective/diagram questions
+        visual_chunks = []
+        if spec.question_type == "descriptive" and spec.units:
+            visual_chunks = retrieve_visual_chunks_for_spec(db, spec, subject_id, top_k=2)
+            if visual_chunks:
+                log.info(f"[STEP 3] Q{spec.question_no}: Using {len(visual_chunks)} visual chunk(s)")
+
+        table_md = get_table_markdown_for_chunks(db, chunks)
+
         # Step 4: Generate question
         log.info(f"[STEP 4] Q{spec.question_no}: Generating ({spec.question_type}, {spec.marks}M, bloom={spec.bloom_targets})...")
         try:
-            generated = await generate_question(spec, chunks)
+            generated = await generate_question(
+                spec, chunks, visual_chunks=visual_chunks, table_markdown_context=table_md or None
+            )
             generated.co_mapped = spec.co_mapped
             log.info(f"[STEP 4] Q{spec.question_no}: OK — question_type={generated.question_type}, options={len(generated.options)}, bloom={generated.bloom_level}")
             if generated.question_type == "mcq":
@@ -534,6 +628,7 @@ async def generate_paper(
                 options=[],
                 marking_scheme=[MarkingPoint(point="Full answer", marks=spec.marks)],
                 source_chunk_ids=[c.id for c in chunks],
+                source_asset_ids=[],
                 co_mapped=spec.co_mapped,
                 unit_ids=spec.units,
             )
@@ -573,11 +668,12 @@ async def generate_paper(
         total_marks=total_marks,
         paper_json=paper_dict,
         finalised=False,
+        teacher_id=current_teacher.id,
     )
     db.add(db_paper)
     db.commit()
     db.refresh(db_paper)
-    log.info(f"[STEP 9] OK — saved as paper_id={db_paper.id}")
+    log.info(f"[STEP 9] OK — saved as paper_id={db_paper.id} (owner={current_teacher.id})")
 
     # ── Step 8: Usage Tracking ──────────────────────────────────────────────
     paper.paper_id = db_paper.id
@@ -597,16 +693,42 @@ async def generate_paper(
     )
 
 
+# ─── Paper access: owner or shared with current teacher ───────────────────────
+
+def _paper_owned_by(paper: GeneratedPaper, teacher_id: int) -> bool:
+    return paper.teacher_id == teacher_id
+
+
+def _paper_shared_with(db: Session, paper_id: int, teacher_id: int) -> bool:
+    return db.query(PaperShare).filter(
+        PaperShare.paper_id == paper_id,
+        PaperShare.shared_with_id == teacher_id,
+    ).first() is not None
+
+
+def _can_view_paper(db: Session, paper: GeneratedPaper, teacher_id: int) -> bool:
+    return _paper_owned_by(paper, teacher_id) or _paper_shared_with(db, paper.id, teacher_id)
+
+
 # ─── List Papers ───────────────────────────────────────────────────────────────
 
 @router.get("/papers", response_model=List[PaperSummary])
 def list_papers(
     subject_id: Optional[int] = None,
     limit: int = 20,
+    current_teacher: Teacher = Depends(get_current_teacher),
     db: Session = Depends(get_db),
 ):
-    """List generated papers, optionally filtered by subject."""
-    q = db.query(GeneratedPaper)
+    """List papers the current teacher owns or that were shared with them."""
+    shared_paper_ids = db.query(PaperShare.paper_id).filter(
+        PaperShare.shared_with_id == current_teacher.id,
+    ).distinct()
+    q = db.query(GeneratedPaper).filter(
+        or_(
+            GeneratedPaper.teacher_id == current_teacher.id,
+            GeneratedPaper.id.in_(shared_paper_ids),
+        )
+    )
     if subject_id is not None:
         q = q.filter(GeneratedPaper.subject_id == subject_id)
     papers = q.order_by(GeneratedPaper.id.desc()).limit(limit).all()
@@ -627,11 +749,17 @@ def list_papers(
 # ─── Delete Paper ──────────────────────────────────────────────────────────────
 
 @router.delete("/papers/{paper_id}")
-def delete_paper(paper_id: int, db: Session = Depends(get_db)):
-    """Permanently delete a generated paper."""
+def delete_paper(
+    paper_id: int,
+    current_teacher: Teacher = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
+):
+    """Permanently delete a generated paper. Only the owner can delete."""
     p = db.query(GeneratedPaper).filter(GeneratedPaper.id == paper_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Paper not found")
+    if not _paper_owned_by(p, current_teacher.id):
+        raise HTTPException(status_code=403, detail="Only the paper owner can delete it")
     db.delete(p)
     db.commit()
     return {"ok": True, "deleted_paper_id": paper_id}
@@ -640,12 +768,17 @@ def delete_paper(paper_id: int, db: Session = Depends(get_db)):
 # ─── Get Paper ─────────────────────────────────────────────────────────────────
 
 @router.get("/papers/{paper_id}", response_model=PaperOutput)
-def get_paper(paper_id: int, db: Session = Depends(get_db)):
-    """Get full paper JSON by paper_id."""
+def get_paper(
+    paper_id: int,
+    current_teacher: Teacher = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
+):
+    """Get full paper JSON. Allowed if you own the paper or it was shared with you."""
     p = db.query(GeneratedPaper).filter(GeneratedPaper.id == paper_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Paper not found")
-    # Copy the JSONB dict — SQLAlchemy proxy may be immutable
+    if not _can_view_paper(db, p, current_teacher.id):
+        raise HTTPException(status_code=404, detail="Paper not found")
     data = dict(p.paper_json or {})
     data["paper_id"] = p.id
     return PaperOutput(**data)
@@ -685,15 +818,18 @@ class EditQuestionRequest(BaseModel):
 def edit_question(
     paper_id: int,
     req: EditQuestionRequest,
+    current_teacher: Teacher = Depends(get_current_teacher),
     db: Session = Depends(get_db),
 ):
     """
     Human-in-the-loop: Update a specific question's text, answer key, or marking scheme.
-    Edits are persisted directly to the paper_json blob.
+    Only the paper owner can edit.
     """
     p = db.query(GeneratedPaper).filter(GeneratedPaper.id == paper_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Paper not found")
+    if not _paper_owned_by(p, current_teacher.id):
+        raise HTTPException(status_code=403, detail="Only the paper owner can edit it")
 
     data = dict(p.paper_json or {})
     sections = data.get("sections", [])
@@ -747,11 +883,12 @@ class RegenerateQuestionRequest(BaseModel):
 async def regenerate_question(
     paper_id: int,
     req: RegenerateQuestionRequest,
+    current_teacher: Teacher = Depends(get_current_teacher),
     db: Session = Depends(get_db),
 ):
     """
     Human-in-the-loop: Regenerate a single question using the same spec.
-    Replaces the question in the stored paper_json.
+    Only the paper owner can regenerate.
     """
     from generation.retrieval_engine import retrieve_chunks_for_spec
     from generation.question_generator import generate_question
@@ -759,6 +896,8 @@ async def regenerate_question(
     p = db.query(GeneratedPaper).filter(GeneratedPaper.id == paper_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Paper not found")
+    if not _paper_owned_by(p, current_teacher.id):
+        raise HTTPException(status_code=403, detail="Only the paper owner can regenerate questions")
 
     spec = QuestionSpec(
         question_no=req.section_index + 1,
@@ -778,11 +917,20 @@ async def regenerate_question(
         spec.units = []
         chunks = retrieve_chunks_for_spec(db, spec, req.subject_id, top_k=5)
 
+    # Optional: visual chunks for descriptive questions
+    visual_chunks = []
+    if spec.question_type == "descriptive" and spec.units:
+        visual_chunks = retrieve_visual_chunks_for_spec(db, spec, req.subject_id, top_k=2)
+
+    table_md = get_table_markdown_for_chunks(db, chunks)
+
     log.info(f"[REGEN] Got {len(chunks)} chunks, generating...")
 
     # Generate
     try:
-        generated = await generate_question(spec, chunks)
+        generated = await generate_question(
+            spec, chunks, visual_chunks=visual_chunks, table_markdown_context=table_md or None
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Regeneration failed: {e}")
 
@@ -817,11 +965,17 @@ async def regenerate_question(
 # ─── Human-in-the-loop: Finalise Paper ────────────────────────────────────────
 
 @router.patch("/papers/{paper_id}/finalise")
-def finalise_paper(paper_id: int, db: Session = Depends(get_db)):
-    """Mark a paper as finalised (reviewed and approved by human)."""
+def finalise_paper(
+    paper_id: int,
+    current_teacher: Teacher = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
+):
+    """Mark a paper as finalised. Only the paper owner can finalise."""
     p = db.query(GeneratedPaper).filter(GeneratedPaper.id == paper_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Paper not found")
+    if not _paper_owned_by(p, current_teacher.id):
+        raise HTTPException(status_code=403, detail="Only the paper owner can finalise it")
 
     # Write to the DB column (not the JSON blob) so list_papers can read it
     from sqlalchemy import update
@@ -843,19 +997,18 @@ from fastapi.responses import StreamingResponse
 def export_question_paper(
     paper_id: int,
     college_name: Optional[str] = None,
-    db: Session = Depends(get_db)
+    current_teacher: Teacher = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
 ):
     """
-    Export question paper as PDF (no answers, just questions).
-    
-    Query params:
-    - college_name: Optional college name to display in header
+    Export question paper as PDF. Allowed if you own the paper or it was shared with you.
     """
     from generation.paper_exporter import generate_question_paper
-    
-    # Fetch paper
+
     db_paper = db.query(GeneratedPaper).filter(GeneratedPaper.id == paper_id).first()
     if not db_paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    if not _can_view_paper(db, db_paper, current_teacher.id):
         raise HTTPException(status_code=404, detail="Paper not found")
     
     # Get subject name
@@ -865,11 +1018,25 @@ def export_question_paper(
     # Parse paper JSON
     paper = PaperOutput(**db_paper.paper_json)
     
+    # Resolve source_asset_ids → image paths (same order as sections/variants)
+    question_image_paths = []
+    for section in paper.sections:
+        for variant in section.variants:
+            asset_ids = getattr(variant.question, "source_asset_ids", None) or []
+            if not asset_ids:
+                question_image_paths.append([])
+                continue
+            rows = db.query(VisualChunk).filter(VisualChunk.id.in_(asset_ids)).all()
+            id_to_path = {r.id: r.image_path for r in rows if r.image_path}
+            paths = [id_to_path[aid] for aid in asset_ids if aid in id_to_path]
+            question_image_paths.append(paths)
+    
     # Generate PDF
     pdf_buffer = generate_question_paper(
         paper=paper,
         subject_name=subject_name,
         college_name=college_name,
+        question_image_paths=question_image_paths if any(p for p in question_image_paths) else None,
     )
     
     # Return as streaming response
@@ -886,19 +1053,18 @@ def export_question_paper(
 def export_answer_key(
     paper_id: int,
     college_name: Optional[str] = None,
-    db: Session = Depends(get_db)
+    current_teacher: Teacher = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
 ):
     """
-    Export answer key PDF (questions + answers + marking schemes).
-    
-    Query params:
-    - college_name: Optional college name to display in header
+    Export answer key PDF. Allowed if you own the paper or it was shared with you.
     """
     from generation.paper_exporter import generate_answer_key
-    
-    # Fetch paper
+
     db_paper = db.query(GeneratedPaper).filter(GeneratedPaper.id == paper_id).first()
     if not db_paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    if not _can_view_paper(db, db_paper, current_teacher.id):
         raise HTTPException(status_code=404, detail="Paper not found")
     
     # Get subject name
@@ -929,19 +1095,18 @@ def export_answer_key(
 def export_marking_scheme(
     paper_id: int,
     college_name: Optional[str] = None,
-    db: Session = Depends(get_db)
+    current_teacher: Teacher = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
 ):
     """
-    Export marking scheme PDF (detailed rubric for evaluators).
-    
-    Query params:
-    - college_name: Optional college name to display in header
+    Export marking scheme PDF. Allowed if you own the paper or it was shared with you.
     """
     from generation.paper_exporter import generate_marking_scheme
-    
-    # Fetch paper
+
     db_paper = db.query(GeneratedPaper).filter(GeneratedPaper.id == paper_id).first()
     if not db_paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    if not _can_view_paper(db, db_paper, current_teacher.id):
         raise HTTPException(status_code=404, detail="Paper not found")
     
     # Get subject name
@@ -965,4 +1130,63 @@ def export_marking_scheme(
         headers={
             "Content-Disposition": f"attachment; filename=marking_scheme_{paper_id}.pdf"
         }
+    )
+
+
+# ─── Paper Sharing ─────────────────────────────────────────────────────────────
+
+class SharePaperRequest(BaseModel):
+    shared_with_email: EmailStr
+
+
+class SharePaperResponse(BaseModel):
+    message: str
+    shared_with: str
+
+
+@router.post("/papers/{paper_id}/share", response_model=SharePaperResponse)
+def share_paper(
+    paper_id: int,
+    payload: SharePaperRequest,
+    current_teacher: Teacher = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
+):
+    """
+    Share a generated paper with another teacher by email.
+    Only the paper owner can share. Can share with multiple teachers (one call per teacher).
+    """
+    paper = db.query(GeneratedPaper).filter(GeneratedPaper.id == paper_id).first()
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    if not _paper_owned_by(paper, current_teacher.id):
+        raise HTTPException(status_code=403, detail="Only the paper owner can share it")
+
+    recipient = db.query(Teacher).filter(
+        Teacher.email == payload.shared_with_email,
+        Teacher.is_active == True,
+    ).first()
+    if not recipient:
+        raise HTTPException(status_code=404, detail=f"No active teacher found with email {payload.shared_with_email}")
+
+    if recipient.id == current_teacher.id:
+        raise HTTPException(status_code=400, detail="Cannot share a paper with yourself")
+
+    existing = db.query(PaperShare).filter(
+        PaperShare.paper_id == paper_id,
+        PaperShare.shared_with_id == recipient.id,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Paper already shared with this teacher")
+
+    share = PaperShare(
+        paper_id=paper_id,
+        shared_by_id=current_teacher.id,
+        shared_with_id=recipient.id,
+    )
+    db.add(share)
+    db.commit()
+
+    return SharePaperResponse(
+        message="Paper shared successfully",
+        shared_with=recipient.full_name,
     )
