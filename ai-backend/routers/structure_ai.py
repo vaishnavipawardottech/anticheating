@@ -27,10 +27,19 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
     raise RuntimeError("GOOGLE_API_KEY environment variable not set.")
 
-client = OpenAI(
+# Gemini client (OpenAI-compatible)
+gemini_client = OpenAI(
     api_key=GOOGLE_API_KEY,
     base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
 )
+
+# OpenAI client for GPT-4o-mini (Brain Upgrade - Structured Alignment)
+openai_key = os.getenv("OPENAI_API_KEY")
+if not openai_key:
+    print("WARNING: OPENAI_API_KEY not set - structured alignment will fail")
+    openai_client = None
+else:
+    openai_client = OpenAI(api_key=openai_key)
 
 
 # ==========================================
@@ -153,7 +162,7 @@ REMEMBER: Return ONLY valid JSON. No markdown, no explanations, no code blocks.
 # GEMINI CALL
 # ==========================================
 
-async def call_gemini_flash(prompt: str) -> str:
+async def call_gemini_flash(prompt: str, max_tokens: int = 1200) -> str:
     """
     Calls Gemini 2.5 Flash Lite using OpenAI-compatible API.
     Returns raw JSON string.
@@ -161,7 +170,7 @@ async def call_gemini_flash(prompt: str) -> str:
 
     try:
         print(f"Calling Gemini API (prompt length: {len(prompt)} chars)...")
-        response = client.chat.completions.create(
+        response = gemini_client.chat.completions.create(
             model="gemini-2.5-flash-lite",
             messages=[
                 {"role": "system", "content": "Return only valid JSON."},
@@ -169,7 +178,7 @@ async def call_gemini_flash(prompt: str) -> str:
             ],
             temperature=0.1,
             response_format={"type": "json_object"},
-            max_tokens=1200,
+            max_tokens=max_tokens,
         )
 
         content = response.choices[0].message.content
@@ -183,6 +192,70 @@ async def call_gemini_flash(prompt: str) -> str:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Gemini API failed: {str(e)}"
+        )
+
+
+# ==========================================
+# GPT-4O-MINI STRUCTURED OUTPUTS (Brain Upgrade)
+# ==========================================
+
+async def call_gpt4o_mini_structured(
+    prompt: str,
+    response_schema: dict,
+    model: str = "gpt-4o-mini"
+) -> dict:
+    """
+    Calls GPT-4o-mini with Structured Outputs (guaranteed valid JSON schema).
+    
+    Brain Upgrade: Use this for alignment to ensure reliable structured responses.
+    
+    Args:
+        prompt: User prompt
+        response_schema: JSON schema dict defining expected structure
+        model: Model name (default: gpt-4o-mini)
+        
+    Returns:
+        Parsed JSON dict (guaranteed to match schema)
+    """
+    if not openai_client:
+        raise HTTPException(
+            status_code=500,
+            detail="OPENAI_API_KEY not set. Cannot use structured outputs."
+        )
+    
+    try:
+        print(f"Calling GPT-4o-mini (structured) - prompt length: {len(prompt)} chars...")
+        
+        response = openai_client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a precise document classifier."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "alignment_response",
+                    "strict": True,
+                    "schema": response_schema
+                }
+            },
+            temperature=0.1
+        )
+        
+        content = response.choices[0].message.content
+        print(f"GPT-4o-mini success (response length: {len(content)} chars)")
+        
+        # Parse and return
+        return json.loads(content)
+        
+    except Exception as e:
+        print(f"GPT-4o-mini API error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"GPT-4o-mini API failed: {str(e)}"
         )
 
 
@@ -269,7 +342,7 @@ async def health_check():
     Health check for Gemini API
     """
     try:
-        response = client.chat.completions.create(
+        response = gemini_client.chat.completions.create(
             model="gemini-2.5-flash-lite",
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=5,

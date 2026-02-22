@@ -1,0 +1,230 @@
+.vectors-explorer {
+    width: 100%;
+    min-height: 100%;
+    background-color: white;
+    display: flex;
+    flex-direction: column;
+}
+
+.vectors-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem;
+    border-bottom: 1px solid #E5E7EB;
+    background-color: white;
+    flex-shrink: 0;
+    color: #111827;
+}
+
+.vectors-explorer .back-btn {
+    width: 2rem;
+    height: 2rem;
+    border: none;
+    border-radius: 0.375rem;
+    background-color: #F3F4F6;
+    color: #0061A1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    flex-shrink: 0;
+}
+
+.vectors-explorer .back-btn:hover {
+    background-color: #E5E7EB;
+    color: #374151;
+}
+
+.vectors-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #111827;
+    margin: 0;
+}
+
+.vectors-header + .vectors-badges {
+    margin: 1rem 2rem 0;
+}
+
+.vectors-header ~ .vectors-toolbar {
+    margin: 0 2rem;
+}
+
+.vectors-badges {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.vectors-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.75rem;
+    background: #E5E7EB;
+    border-radius: 6px;
+    font-size: 0.8125rem;
+    color: #374151;
+}
+
+.vectors-badge-ok {
+    background: #D1FAE5;
+    color: #065F46;
+}
+
+.vectors-badge-model {
+    background: #DBEAFE;
+    color: #1E40AF;
+}
+
+.vectors-badge-docs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.vectors-badge-docs span {
+    font-size: 0.75rem;
+    opacity: 0.9;
+}
+
+.vectors-check {
+    flex-direction: row;
+    align-items: center;
+}
+
+.vectors-check input {
+    margin-right: 0.35rem;
+    min-width: auto;
+}
+
+.vectors-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.vectors-toolbar label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    color: #6B7280;
+}
+
+.vectors-toolbar input,
+.vectors-toolbar select {
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #D1D5DB;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    min-width: 100px;
+}
+
+.vectors-refresh {
+    padding: 0.5rem 1rem;
+    background: #3B82F6;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    cursor: pointer;
+}
+
+.vectors-refresh:hover:not(:disabled) {
+    background: #2563EB;
+}
+
+.vectors-refresh:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.vectors-load-all {
+    font-weight: 600;
+}
+
+.vectors-toolbar-divider {
+    color: #D1D5DB;
+    margin: 0 0.25rem;
+}
+
+.vectors-error {
+    color: #DC2626;
+    font-size: 0.875rem;
+    margin-bottom: 1rem;
+}
+
+.vectors-summary {
+    font-size: 0.875rem;
+    color: #6B7280;
+    margin-bottom: 0.75rem;
+}
+
+.vectors-table-wrap {
+    overflow-x: auto;
+    background: white;
+    border-radius: 8px;
+    border: 1px solid #E5E7EB;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.vectors-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8125rem;
+}
+
+.vectors-table th,
+.vectors-table td {
+    padding: 0.6rem 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid #E5E7EB;
+}
+
+.vectors-table th {
+    background: #F9FAFB;
+    font-weight: 600;
+    color: #374151;
+    white-space: nowrap;
+}
+
+.vectors-table tbody tr:hover {
+    background: #F9FAFB;
+}
+
+.vectors-text {
+    max-width: 280px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vectors-text-full {
+    max-width: 420px;
+    max-height: 12rem;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    text-overflow: unset;
+}
+
+.vectors-vector-id {
+    font-family: ui-monospace, monospace;
+    font-size: 0.75rem;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.vectors-empty {
+    text-align: center;
+    color: #9CA3AF;
+    padding: 2rem;
+}

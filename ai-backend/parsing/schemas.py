@@ -20,6 +20,10 @@ class SemanticElement(BaseModel):
     page_number: Optional[int] = Field(None, ge=1, description="Page number where element appears (if available)")
     source_filename: str = Field(..., description="Original filename for traceability")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Element metadata (coordinates, confidence, etc.)")
+    
+    # Classification fields (set by ElementClassifier)
+    category: Optional[str] = Field(None, description="Element category: TEXT, DIAGRAM, TABLE, CODE, FORMULA, OTHER")
+    is_diagram_critical: Optional[bool] = Field(False, description="True if element requires diagram understanding")
 
     class Config:
         json_schema_extra = {
@@ -32,7 +36,9 @@ class SemanticElement(BaseModel):
                 "metadata": {
                     "coordinates": {"points": [[100, 50], [500, 100]]},
                     "detection_origin": "pdfminer"
-                }
+                },
+                "category": "TEXT",
+                "is_diagram_critical": False
             }
         }
 

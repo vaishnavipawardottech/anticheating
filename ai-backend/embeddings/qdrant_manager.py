@@ -1,28 +1,45 @@
 """
-Qdrant Vector Database Manager
+Qdrant Vector Database Manager - Brain Upgrade
 Handles vector storage and retrieval for semantic search
+
+Brain Upgrade Changes:
+- Dimensions: 384 → 1536 (text-embedding-3-small)
+- Added parent_id to chunk payloads for parent-child retrieval
+- Children (chunks) indexed for precision, parents fetched for LLM context
 """
 
 from typing import List, Dict, Optional, Any
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct,
-    Filter, FieldCondition, MatchValue, SearchRequest
+    Filter, FieldCondition, MatchValue, MatchAny
 )
 import os
 
 
 class QdrantManager:
     """
-    Manages Qdrant vector database operations
+    Manages Qdrant vector database operations.
+
+    Brain Upgrade Architecture:
+    - Collections store "children" (500-token chunks) with 1536-dim embeddings
+    - Each child payload includes parent_id to link to parent_contexts table
+    - Search workflow: Query children → Get parent_ids → Fetch parents from Postgres
     
-    Collection: academic_elements
-    - Stores embeddings for parsed document elements
-    - Metadata: document_id, subject_id, concept_id, category, page_number
+    Two collections (one per retrieval unit; same dim = same model):
+    - academic_chunks: main retrieval index (child chunk-level embeddings)
+    - academic_elements: optional element-level index for special cases
     """
-    
-    COLLECTION_NAME = "academic_elements"
-    EMBEDDING_DIM = 768  # BGE-base-en-v1.5 dimension
+
+    COLLECTION_ELEMENTS = "academic_elements"
+    COLLECTION_CHUNKS = "academic_chunks"
+    COLLECTION_VISUALS = "academic_visuals"
+    COLLECTION_QUESTIONS = "question_embeddings"
+    COLLECTION_NAME = "academic_elements"  # default/legacy alias for elements
+    EMBEDDING_DIM = 1536  # Brain Upgrade: text-embedding-3-small (was 384)
+    CHUNK_ID_OFFSET = 2**31  # Point IDs for chunks: chunk_id + OFFSET (avoids collision with element IDs)
+    VISUAL_ID_OFFSET = 2**29   # Point IDs for visual chunks: asset_id + OFFSET
+    QUESTION_ID_OFFSET = 2**30  # Point IDs for questions: question_id + OFFSET
     
     def __init__(
         self,
@@ -45,57 +62,191 @@ class QdrantManager:
             port = port or int(os.getenv("QDRANT_PORT", "6333"))
             self.client = QdrantClient(host=host, port=port)
         
-        print(f"✓ Connected to Qdrant at {host}:{port}")
+        print(f"Connected to Qdrant at {host}:{port}")
     
-    def create_collection(self, recreate: bool = False):
+    def _create_collection_if_needed(
+        self,
+        collection_name: str,
+        recreate: bool = False,
+        payload_indexes: list = None,
+    ):
         """
-        Create the academic_elements collection
-        
-        Args:
-            recreate: If True, delete existing collection and recreate
+        Create collection with proper payload indexes for metadata filtering.
+        Brain Upgrade: Ensures hierarchical filtering (subject → unit → concept).
         """
-        # Check if collection exists
         collections = self.client.get_collections().collections
-        collection_names = [c.name for c in collections]
-        
-        if self.COLLECTION_NAME in collection_names:
+        names = [c.name for c in collections]
+        if collection_name in names:
             if recreate:
-                print(f"Deleting existing collection: {self.COLLECTION_NAME}")
-                self.client.delete_collection(self.COLLECTION_NAME)
+                self.client.delete_collection(collection_name)
+                print(f"Deleted existing: {collection_name}")
             else:
-                print(f"✓ Collection already exists: {self.COLLECTION_NAME}")
+                print(f"Collection exists: {collection_name}")
                 return
         
-        # Create collection
         self.client.create_collection(
-            collection_name=self.COLLECTION_NAME,
+            collection_name=collection_name,
             vectors_config=VectorParams(
                 size=self.EMBEDDING_DIM,
-                distance=Distance.COSINE  # Cosine similarity for semantic search
+                distance=Distance.COSINE,
+            ),
+        )
+        
+        # Create payload indexes for filtering
+        for field, schema in payload_indexes or []:
+            try:
+                self.client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name=field,
+                    field_schema=schema,
+                )
+                print(f"  ✓ Created index on {field}")
+            except Exception as e:
+                print(f"  ⚠ Index on {field} failed: {str(e)}")
+        
+        print(f"Created collection: {collection_name}")
+
+    def create_collection(self, recreate: bool = False):
+        """
+        Create academic_elements and academic_chunks collections.
+        Brain Upgrade: Includes comprehensive payload indexes for scoped retrieval.
+        
+        Scoped Retrieval Use Cases:
+        - Search within specific subject (e.g., "OS concepts only")
+        - Filter by unit (e.g., "Memory Management unit")
+        - Target specific concepts (e.g., "Paging, Segmentation")
+        - Document-level search (e.g., "Search in Unit_1.pdf")
+        """
+        # Element indexes: document-level + hierarchy
+        elem_indexes = [
+            ("document_id", "integer"),
+            ("subject_id", "integer"),
+            ("category", "keyword"),
+            ("concept_id", "integer"),
+            ("unit_id", "integer"),
+            ("section_path", "keyword"),
+        ]
+        
+        # Chunk indexes: full hierarchy + parent_id + academic classification
+        chunk_indexes = [
+            ("document_id", "integer"),
+            ("subject_id", "integer"),
+            ("concept_id", "integer"),
+            ("unit_id", "integer"),
+            ("parent_id", "integer"),       # Brain Upgrade: link to parent_contexts
+            ("section_path", "keyword"),
+            ("chunk_type", "keyword"),
+            # Step 7: Academic classification indexes (for Bloom/difficulty filtered retrieval)
+            ("blooms_level_int", "integer"),   # 1-6 numeric for range filters
+            ("difficulty", "keyword"),          # easy|medium|hard
+            ("section_type", "keyword"),        # definition|example|exercise|...
+            ("source_type", "keyword"),         # textbook|slide|lecture_note|syllabus
+            ("usage_count", "integer"),         # exposure tracking
+        ]
+        
+        self._create_collection_if_needed(
+            self.COLLECTION_ELEMENTS, recreate=recreate, payload_indexes=elem_indexes
+        )
+        self._create_collection_if_needed(
+            self.COLLECTION_CHUNKS, recreate=recreate, payload_indexes=chunk_indexes
+        )
+        # Visual chunks: diagram/table/equation assets indexed by caption
+        visual_indexes = [
+            ("document_id", "integer"),
+            ("subject_id", "integer"),
+            ("asset_type", "keyword"),
+            ("unit_id", "integer"),
+            ("concept_id", "integer"),
+            ("page_no", "integer"),
+            ("asset_id", "integer"),
+        ]
+        self._create_collection_if_needed(
+            self.COLLECTION_VISUALS, recreate=recreate, payload_indexes=visual_indexes
+        )
+        question_indexes = [
+            ("subject_id", "integer"),
+            ("unit_id", "integer"),
+            ("concept_id", "integer"),
+        ]
+        self._create_collection_if_needed(
+            self.COLLECTION_QUESTIONS, recreate=recreate, payload_indexes=question_indexes
+        )
+
+    def ensure_question_collection(self):
+        """Ensure question_embeddings collection exists (for dedupe)."""
+        self._create_collection_if_needed(
+            self.COLLECTION_QUESTIONS,
+            payload_indexes=[
+                ("subject_id", "integer"),
+                ("unit_id", "integer"),
+                ("concept_id", "integer"),
+            ],
+        )
+
+    def index_question(
+        self,
+        question_id: int,
+        embedding: List[float],
+        subject_id: int,
+        unit_id: Optional[int] = None,
+        concept_id: Optional[int] = None,
+    ):
+        """Index a single question for dedupe/search. Point id = question_id + QUESTION_ID_OFFSET."""
+        self.ensure_question_collection()
+        point = PointStruct(
+            id=question_id + self.QUESTION_ID_OFFSET,
+            vector=embedding,
+            payload={
+                "question_id": question_id,
+                "subject_id": subject_id,
+                "unit_id": unit_id or 0,
+                "concept_id": concept_id or 0,
+            },
+        )
+        self.client.upsert(collection_name=self.COLLECTION_QUESTIONS, points=[point])
+
+    def search_question_duplicates(
+        self,
+        query_vector: List[float],
+        subject_id: Optional[int] = None,
+        unit_id: Optional[int] = None,
+        concept_id: Optional[int] = None,
+        limit: int = 10,
+        score_threshold: float = 0.0,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for similar questions (for dedupe).
+        Returns list of {question_id, score, ...}.
+        Use score_threshold=0.90 for same concept/unit dedupe, 0.95 for global.
+        """
+        self.ensure_question_collection()
+        must = [FieldCondition(key="subject_id", match=MatchValue(value=subject_id))] if subject_id else []
+        if unit_id is not None:
+            must.append(FieldCondition(key="unit_id", match=MatchValue(value=unit_id)))
+        if concept_id is not None:
+            must.append(FieldCondition(key="concept_id", match=MatchValue(value=concept_id)))
+        search_filter = Filter(must=must) if must else None
+        try:
+            results = self.client.search(
+                collection_name=self.COLLECTION_QUESTIONS,
+                query_vector=query_vector,
+                query_filter=search_filter,
+                limit=limit,
+                score_threshold=score_threshold,
             )
-        )
-        
-        # Create payload indexes for efficient filtering
-        self.client.create_payload_index(
-            collection_name=self.COLLECTION_NAME,
-            field_name="document_id",
-            field_schema="integer"
-        )
-        
-        self.client.create_payload_index(
-            collection_name=self.COLLECTION_NAME,
-            field_name="subject_id",
-            field_schema="integer"
-        )
-        
-        self.client.create_payload_index(
-            collection_name=self.COLLECTION_NAME,
-            field_name="category",
-            field_schema="keyword"
-        )
-        
-        print(f"✓ Created collection: {self.COLLECTION_NAME}")
-    
+            return [
+                {
+                    "question_id": r.payload.get("question_id"),
+                    "score": r.score,
+                    "subject_id": r.payload.get("subject_id"),
+                    "unit_id": r.payload.get("unit_id"),
+                    "concept_id": r.payload.get("concept_id"),
+                }
+                for r in results
+            ]
+        except Exception:
+            return []
+
     def index_element(
         self,
         element_id: int,
@@ -120,7 +271,7 @@ class QdrantManager:
         )
         
         self.client.upsert(
-            collection_name=self.COLLECTION_NAME,
+            collection_name=self.COLLECTION_ELEMENTS,
             points=[point]
         )
         
@@ -146,34 +297,130 @@ class QdrantManager:
         if not (len(element_ids) == len(embeddings) == len(metadatas)):
             raise ValueError("element_ids, embeddings, and metadatas must have same length")
         
-        # Filter out None embeddings (safety check)
-        valid_data = [
-            (eid, emb, meta) 
-            for eid, emb, meta in zip(element_ids, embeddings, metadatas)
-            if emb is not None and len(emb) == self.EMBEDDING_DIM
-        ]
-        
-        if not valid_data:
-            print("⚠ No valid embeddings to index")
-            return []
-        
         points = [
             PointStruct(
                 id=element_id,
                 vector=embedding,
                 payload=metadata
             )
-            for element_id, embedding, metadata in valid_data
+            for element_id, embedding, metadata in zip(element_ids, embeddings, metadatas)
         ]
         
         self.client.upsert(
-            collection_name=self.COLLECTION_NAME,
+            collection_name=self.COLLECTION_ELEMENTS,
             points=points
         )
         
-        print(f"✓ Indexed {len(points)} elements to Qdrant")
+        print(f"Indexed {len(points)} elements to Qdrant")
         
-        return [str(eid) for eid, _, _ in valid_data]
+        return [str(eid) for eid in element_ids]
+    
+    def index_chunks_batch(
+        self,
+        chunk_ids: List[int],
+        embeddings: List[List[float]],
+        metadatas: List[Dict[str, Any]]
+    ) -> List[str]:
+        """
+        Index document chunks with unit/concept/section metadata.
+        Brain Upgrade: Includes parent_id for parent-child retrieval.
+        
+        Uses point id = chunk_id + CHUNK_ID_OFFSET. Stores in academic_chunks collection.
+        Metadata should include:
+        - subject_id, document_id
+        - unit_id, concept_id (optional)
+        - section_path, page_start, page_end
+        - parent_id (Brain Upgrade - links to parent_contexts table)
+        """
+        if not (len(chunk_ids) == len(embeddings) == len(metadatas)):
+            raise ValueError("chunk_ids, embeddings, and metadatas must have same length")
+        points = [
+            PointStruct(
+                id=chunk_id + self.CHUNK_ID_OFFSET,
+                vector=emb,
+                payload={
+                    **meta,
+                    "point_type": "chunk",
+                    "chunk_id": chunk_id,
+                    "parent_id": meta.get("parent_id")  # Brain Upgrade: link to parent
+                }
+            )
+            for chunk_id, emb, meta in zip(chunk_ids, embeddings, metadatas)
+        ]
+        self.client.upsert(collection_name=self.COLLECTION_CHUNKS, points=points)
+        print(f"Indexed {len(points)} chunks to Qdrant")
+        return [str(cid) for cid in chunk_ids]
+
+    def index_visuals_batch(
+        self,
+        asset_ids: List[int],
+        embeddings: List[List[float]],
+        metadatas: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Index visual chunks (diagram/table/equation) by caption embedding.
+        Point id = asset_id + VISUAL_ID_OFFSET. Payload: asset_id, asset_type, subject_id, unit_id, concept_id, page_no.
+        """
+        if not asset_ids:
+            return
+        if len(asset_ids) != len(embeddings) or len(asset_ids) != len(metadatas):
+            raise ValueError("asset_ids, embeddings, and metadatas must have same length")
+        points = [
+            PointStruct(
+                id=aid + self.VISUAL_ID_OFFSET,
+                vector=emb,
+                payload={
+                    **meta,
+                    "point_type": "visual",
+                    "asset_id": aid,
+                },
+            )
+            for aid, emb, meta in zip(asset_ids, embeddings, metadatas)
+        ]
+        self.client.upsert(collection_name=self.COLLECTION_VISUALS, points=points)
+        print(f"Indexed {len(points)} visual chunks to Qdrant")
+
+    def search_visuals(
+        self,
+        query_vector: List[float],
+        limit: int = 5,
+        subject_id: Optional[int] = None,
+        unit_ids: Optional[List[int]] = None,
+        document_id: Optional[int] = None,
+        score_threshold: float = 0.2,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search visual chunks by caption embedding. Returns list of {asset_id, score, metadata}.
+        """
+        must = []
+        if subject_id is not None:
+            must.append(FieldCondition(key="subject_id", match=MatchValue(value=subject_id)))
+        if document_id is not None:
+            must.append(FieldCondition(key="document_id", match=MatchValue(value=document_id)))
+        if unit_ids:
+            must.append(FieldCondition(key="unit_id", match=MatchAny(any=unit_ids)))
+        search_filter = Filter(must=must) if must else None
+        try:
+            collections = self.client.get_collections().collections
+            if not any(c.name == self.COLLECTION_VISUALS for c in collections):
+                return []
+            results = self.client.search(
+                collection_name=self.COLLECTION_VISUALS,
+                query_vector=query_vector,
+                query_filter=search_filter,
+                limit=limit,
+                score_threshold=score_threshold,
+            )
+            return [
+                {
+                    "asset_id": r.payload.get("asset_id"),
+                    "score": r.score,
+                    "metadata": r.payload or {},
+                }
+                for r in results
+            ]
+        except Exception:
+            return []
     
     def search(
         self,
@@ -182,96 +429,131 @@ class QdrantManager:
         subject_id: Optional[int] = None,
         category: Optional[str] = None,
         document_id: Optional[int] = None,
-        score_threshold: float = 0.5
+        unit_id: Optional[int] = None,
+        concept_ids: Optional[List[int]] = None,
+        section_path: Optional[str] = None,
+        score_threshold: float = 0.2,
+        search_chunks: bool = True,
+        search_elements: bool = False,
     ) -> List[Dict[str, Any]]:
         """
-        Semantic search with optional filters
-        
-        Args:
-            query_vector: Query embedding
-            limit: Max results to return
-            subject_id: Filter by subject
-            category: Filter by category (TEXT, DIAGRAM, etc.)
-            document_id: Filter by document
-            score_threshold: Minimum similarity score
-            
-        Returns:
-            List of search results with scores and metadata
+        Semantic search. By default searches academic_chunks (main retrieval).
+        Set search_elements=True to also search academic_elements (special cases).
         """
-        # Build filter conditions
         must_conditions = []
-        
         if subject_id is not None:
             must_conditions.append(
-                FieldCondition(
-                    key="subject_id",
-                    match=MatchValue(value=subject_id)
-                )
+                FieldCondition(key="subject_id", match=MatchValue(value=subject_id))
             )
-        
         if category is not None:
             must_conditions.append(
-                FieldCondition(
-                    key="category",
-                    match=MatchValue(value=category)
-                )
+                FieldCondition(key="category", match=MatchValue(value=category))
             )
-        
         if document_id is not None:
             must_conditions.append(
-                FieldCondition(
-                    key="document_id",
-                    match=MatchValue(value=document_id)
-                )
+                FieldCondition(key="document_id", match=MatchValue(value=document_id))
             )
-        
-        # Build filter
+        if unit_id is not None:
+            must_conditions.append(
+                FieldCondition(key="unit_id", match=MatchValue(value=unit_id))
+            )
+        if concept_ids:
+            must_conditions.append(
+                FieldCondition(key="concept_id", match=MatchAny(any=concept_ids))
+            )
+        if section_path is not None and section_path != "":
+            must_conditions.append(
+                FieldCondition(key="section_path", match=MatchValue(value=section_path))
+            )
         search_filter = Filter(must=must_conditions) if must_conditions else None
-        
-        # Search using query_points
-        search_result = self.client.query_points(
-            collection_name=self.COLLECTION_NAME,
-            query=query_vector,
-            query_filter=search_filter,
-            limit=limit,
-            score_threshold=score_threshold
-        )
-        
-        # Format results
-        formatted_results = []
-        for result in search_result.points:
-            formatted_results.append({
-                "element_id": result.id,
-                "score": result.score,
-                "metadata": result.payload
-            })
-        
-        return formatted_results
+
+        formatted_results: List[Dict[str, Any]] = []
+
+        if search_chunks:
+            try:
+                collections = self.client.get_collections().collections
+                if any(c.name == self.COLLECTION_CHUNKS for c in collections):
+                    chunk_results = self.client.search(
+                        collection_name=self.COLLECTION_CHUNKS,
+                        query_vector=query_vector,
+                        query_filter=search_filter,
+                        limit=limit,
+                        score_threshold=score_threshold,
+                    )
+                    for result in chunk_results:
+                        payload = result.payload or {}
+                        formatted_results.append({
+                            "point_type": "chunk",
+                            "chunk_id": payload.get("chunk_id"),
+                            "element_id": None,
+                            "score": result.score,
+                            "metadata": payload,
+                        })
+            except Exception:
+                pass
+
+        if search_elements and len(formatted_results) < limit:
+            try:
+                collections = self.client.get_collections().collections
+                if any(c.name == self.COLLECTION_ELEMENTS for c in collections):
+                    elem_results = self.client.search(
+                        collection_name=self.COLLECTION_ELEMENTS,
+                        query_vector=query_vector,
+                        query_filter=search_filter,
+                        limit=limit - len(formatted_results),
+                        score_threshold=score_threshold,
+                    )
+                    for result in elem_results:
+                        formatted_results.append({
+                            "point_type": "element",
+                            "element_id": result.id,
+                            "chunk_id": None,
+                            "score": result.score,
+                            "metadata": result.payload or {},
+                        })
+            except Exception:
+                pass
+
+        # Sort by score descending and cap at limit
+        formatted_results.sort(key=lambda x: x.get("score") or 0, reverse=True)
+        return formatted_results[:limit]
     
     def delete_by_document(self, document_id: int):
-        """Delete all vectors for a document"""
-        self.client.delete(
-            collection_name=self.COLLECTION_NAME,
-            points_selector=Filter(
-                must=[
-                    FieldCondition(
-                        key="document_id",
-                        match=MatchValue(value=document_id)
-                    )
-                ]
-            )
+        """Delete all vectors for a document from chunks, elements, and visuals collections."""
+        doc_filter = Filter(
+            must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]
         )
-        print(f"✓ Deleted vectors for document {document_id}")
-    
+        for coll_name in (self.COLLECTION_CHUNKS, self.COLLECTION_ELEMENTS, self.COLLECTION_VISUALS):
+            try:
+                collections = self.client.get_collections().collections
+                if not any(c.name == coll_name for c in collections):
+                    continue
+                self.client.delete(collection_name=coll_name, points_selector=doc_filter)
+                print(f"Deleted vectors for document {document_id} from {coll_name}")
+            except Exception as e:
+                if "doesn't exist" in str(e) or "404" in str(e) or "Not found" in str(e):
+                    continue
+                raise
+
     def get_collection_info(self) -> Dict[str, Any]:
-        """Get collection statistics"""
-        info = self.client.get_collection(self.COLLECTION_NAME)
-        return {
-            "name": info.config.params.vectors.size,
-            "vectors_count": info.vectors_count,
-            "points_count": info.points_count,
-            "status": info.status
-        }
+        """Get collection statistics for chunks (main) and elements."""
+        out = {"chunks": None, "elements": None}
+        for name, key in [(self.COLLECTION_CHUNKS, "chunks"), (self.COLLECTION_ELEMENTS, "elements")]:
+            try:
+                info = self.client.get_collection(name)
+                out[key] = {
+                    "collection_name": name,
+                    "vector_size": (
+                        info.config.params.vectors.size
+                        if info.config and info.config.params
+                        else self.EMBEDDING_DIM
+                    ),
+                    "points_count": info.points_count,
+                    "status": info.status,
+                }
+            except Exception:
+                out[key] = {"collection_name": name, "points_count": 0, "status": "missing"}
+        return out
 
 
 # Singleton instance

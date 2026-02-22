@@ -1,7 +1,7 @@
 .env
-
+.pdf
 *.md
-
+/uploads/
 # Byte-code files
 __pycache__/
 *.pyc

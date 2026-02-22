@@ -1,4 +1,6 @@
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
+import { ArrowLeft } from 'lucide-react';
 import './AllExams.css';
 
 const exams = [
@@ -9,9 +11,17 @@ const exams = [
 ];
 
 const AllExams = () => {
+  const navigate = useNavigate();
   return (
     <div className="all-exams-container">
-      <h2>All Exams</h2>
+      <div className="all-exams-card">
+        <div className="all-exams-header">
+          <button className="back-btn" onClick={() => navigate('/')} type="button" aria-label="Back">
+            <ArrowLeft size={20} />
+          </button>
+          <h1 className="all-exams-title">All Exams</h1>
+        </div>
+        <div className="all-exams-content">
       <table className="exams-table">
         <thead>
           <tr>
@@ -30,6 +40,8 @@ const AllExams = () => {
           ))}
         </tbody>
       </table>
+        </div>
+      </div>
     </div>
   );
 };
