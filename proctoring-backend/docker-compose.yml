@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    container_name: proctoring-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: proctoring_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # --- VALKEY MESSAGE BROKER ---
+  valkey:
+    image: valkey/valkey:latest
+    container_name: proctoring-valkey
+    restart: unless-stopped
+    ports:
+      - "6379:6379" # Valkey uses the exact same port as Redis
+
+volumes:
+  # This ensures your student data survives even if the container is destroyed
+  postgres_data:
