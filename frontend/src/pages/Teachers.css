@@ -1,0 +1,293 @@
+.teachers-container {
+    width: 100%;
+    height: 100%;
+    background-color: white;
+}
+
+.teachers-card {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.teachers-header {
+    padding: 1rem;
+    border-bottom: 1px solid #E5E7EB;
+    background-color: white;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.teachers-header-info h1 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0;
+    color: #111827;
+}
+
+.teachers-header-info p {
+    font-size: 0.8rem;
+    color: #6B7280;
+    margin: 0;
+}
+
+/* Body */
+.teachers-body {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+}
+
+.teachers-list-panel {
+    flex: 1;
+    overflow-y: auto;
+}
+
+.teachers-add-panel {
+    width: 360px;
+    border-left: 1px solid #E5E7EB;
+    overflow-y: auto;
+    flex-shrink: 0;
+}
+
+/* Table */
+.teachers-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.teachers-table th {
+    padding: 0.5rem 1.25rem;
+    text-align: left;
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: #6B7280;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid #E5E7EB;
+    background: #F9FAFB;
+    position: sticky;
+    top: 0;
+}
+
+.teachers-table td {
+    padding: 0.75rem 1.25rem;
+    font-size: 0.875rem;
+    color: #374151;
+    border-bottom: 1px solid #F3F4F6;
+}
+
+.teachers-table tr:last-child td {
+    border-bottom: none;
+}
+
+.teachers-table tr.highlight {
+    background: #EFF6FF;
+}
+
+.teacher-name-cell {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+}
+
+.teacher-avatar {
+    width: 2rem;
+    height: 2rem;
+    border-radius: 50%;
+    background: #0061a1;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 0.8125rem;
+    flex-shrink: 0;
+}
+
+.teacher-name {
+    font-weight: 500;
+    color: #111827;
+    font-size: 0.875rem;
+}
+
+.teacher-you-badge {
+    margin-left: 0.4rem;
+    font-size: 0.65rem;
+    background: #EFF6FF;
+    color: #0061a1;
+    padding: 0.1rem 0.35rem;
+    border-radius: 0.25rem;
+    font-weight: 500;
+}
+
+/* Badges */
+.role-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    padding: 0.2rem 0.5rem;
+    border-radius: 9999px;
+}
+
+.role-badge.admin {
+    background: #FEF3C7;
+    color: #92400E;
+}
+
+.role-badge.teacher {
+    background: #F3F4F6;
+    color: #374151;
+}
+
+.status-badge {
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: 500;
+    padding: 0.2rem 0.5rem;
+    border-radius: 9999px;
+}
+
+.status-badge.active {
+    background: #D1FAE5;
+    color: #065F46;
+}
+
+.status-badge.inactive {
+    background: #FEE2E2;
+    color: #991B1B;
+}
+
+/* Add Teacher Panel */
+.add-teacher-header {
+    padding: 0.875rem 1.25rem;
+    border-bottom: 1px solid #E5E7EB;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+    font-size: 0.9375rem;
+    color: #111827;
+}
+
+.add-teacher-form {
+    padding: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.add-teacher-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+}
+
+.add-teacher-label {
+    display: block;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: #374151;
+}
+
+.add-teacher-input {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #D1D5DB;
+    border-radius: 0.375rem;
+    font-size: 0.875rem;
+    color: #111827;
+    outline: none;
+    box-sizing: border-box;
+}
+
+.add-teacher-input:focus {
+    border-color: #0061a1;
+    box-shadow: 0 0 0 3px rgba(0, 97, 161, 0.1);
+}
+
+.add-teacher-pw-wrapper {
+    position: relative;
+}
+
+.add-teacher-pw-toggle {
+    position: absolute;
+    right: 0.5rem;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: #9CA3AF;
+    display: flex;
+    padding: 0;
+}
+
+.add-teacher-pw-toggle:hover {
+    color: #6B7280;
+}
+
+.add-teacher-checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.add-teacher-checkbox-row input[type="checkbox"] {
+    width: 1rem;
+    height: 1rem;
+    accent-color: #0061a1;
+    cursor: pointer;
+}
+
+.add-teacher-checkbox-row label {
+    font-size: 0.875rem;
+    color: #374151;
+    cursor: pointer;
+    user-select: none;
+}
+
+.add-teacher-submit {
+    width: 100%;
+    padding: 0.5625rem;
+    background: #0061a1;
+    color: #fff;
+    border: none;
+    border-radius: 0.375rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    transition: background 0.2s;
+}
+
+.add-teacher-submit:hover:not(:disabled) {
+    background: #004d82;
+}
+
+.add-teacher-submit:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.teachers-empty {
+    padding: 2rem;
+    text-align: center;
+    color: #6B7280;
+    font-size: 0.875rem;
+}
+
+@media (max-width: 768px) {
+    .teachers-add-panel {
+        display: none;
+    }
+}

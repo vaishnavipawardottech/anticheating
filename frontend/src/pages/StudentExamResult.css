@@ -1,0 +1,441 @@
+/* Student Exam Result Page */
+
+/* Back button */
+.ser-back-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: #6B7280;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    margin-bottom: 1rem;
+    transition: color 0.15s;
+}
+
+.ser-back-btn:hover {
+    color: #0061a1;
+}
+
+.student-result-page {
+    min-height: calc(100vh - 3.3rem);
+    background: #F9F9F9;
+    padding: 2rem;
+}
+
+.student-result-container {
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+/* Header Section */
+.student-result-header {
+    background: #fff;
+    border: 1px solid #E5E7EB;
+    border-radius: 0.625rem;
+    padding: 2.5rem 2rem;
+    margin-bottom: 1.5rem;
+    text-align: center;
+}
+
+.student-result-title {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #111827;
+    margin: 0 0 0.5rem 0;
+}
+
+.student-result-meta {
+    font-size: 0.875rem;
+    color: #6B7280;
+    margin-bottom: 2rem;
+}
+
+/* Score Circle */
+.student-score-circle-container {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 1.5rem;
+}
+
+.student-score-circle {
+    width: 8rem;
+    height: 8rem;
+    border-radius: 50%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border: 8px solid #E5E7EB;
+    position: relative;
+}
+
+.student-score-circle.excellent {
+    border-color: #059669;
+    color: #059669;
+}
+
+.student-score-circle.good {
+    border-color: #0284C7;
+    color: #0284C7;
+}
+
+.student-score-circle.average {
+    border-color: #D97706;
+    color: #D97706;
+}
+
+.student-score-circle.poor {
+    border-color: #DC2626;
+    color: #DC2626;
+}
+
+.student-score-value {
+    font-size: 2rem;
+    font-weight: 800;
+    line-height: 1;
+}
+
+.student-score-total {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: #6B7280;
+    margin-top: 0.25rem;
+}
+
+.student-score-percentage {
+    position: absolute;
+    bottom: -0.75rem;
+    background: inherit;
+    background-color: #fff;
+    padding: 0.125rem 0.75rem;
+    border-radius: 1rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    border: 1px solid currentColor;
+}
+
+/* Stats */
+.student-result-stats {
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+    gap: 2.5rem;
+    margin-top: 1.5rem;
+}
+
+.student-result-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.student-result-stat-label {
+    font-size: 0.75rem;
+    color: #6B7280;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.student-result-stat-value {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: #111827;
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+}
+
+.student-result-stat-value.correct {
+    color: #059669;
+}
+
+.student-result-stat-value.incorrect {
+    color: #DC2626;
+}
+
+/* Divider between stats */
+.ser-divider {
+    width: 1px;
+    height: 2.5rem;
+    background: #E5E7EB;
+    align-self: center;
+}
+
+/* Score progress bar */
+.ser-progress-wrap {
+    padding: 1.25rem 0 0.25rem;
+    border-top: 1px solid #F3F4F6;
+    margin-top: 1.25rem;
+}
+
+.ser-progress-bar {
+    height: 10px;
+    background: #FEE2E2;
+    border-radius: 9999px;
+    overflow: hidden;
+}
+
+.ser-progress-correct {
+    height: 100%;
+    background: #059669;
+    border-radius: 9999px;
+    transition: width 0.6s ease;
+    min-width: 4px;
+}
+
+.ser-progress-labels {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 0.5rem;
+}
+
+.ser-progress-label {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: #6B7280;
+}
+
+.ser-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.ser-dot.correct { background: #059669; }
+.ser-dot.incorrect { background: #FECACA; border: 1px solid #FCA5A5; }
+
+/* Questions Breakdown */
+.student-breakdown-section {
+    margin-top: 2rem;
+}
+
+.student-breakdown-title {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: #111827;
+    margin: 0 0 1rem 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.student-question-card {
+    background: #fff;
+    border: 1px solid #E5E7EB;
+    border-radius: 0.625rem;
+    padding: 1.5rem 2rem;
+    margin-bottom: 1rem;
+    position: relative;
+    overflow: hidden;
+}
+
+.student-question-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 6px;
+    height: 100%;
+}
+
+.student-question-card.correct::before {
+    background-color: #059669;
+}
+
+.student-question-card.incorrect::before {
+    background-color: #DC2626;
+}
+
+.student-question-card.unanswered::before {
+    background-color: #D1D5DB;
+}
+
+.student-question-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 1rem;
+}
+
+.student-question-number {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: #4B5563;
+}
+
+.student-question-badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.25rem 0.75rem;
+    border-radius: 9999px;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.student-question-badge.correct {
+    background: #D1FAE5;
+    color: #065F46;
+}
+
+.student-question-badge.incorrect {
+    background: #FEE2E2;
+    color: #991B1B;
+}
+
+.student-question-badge.unanswered {
+    background: #F3F4F6;
+    color: #4B5563;
+}
+
+.student-question-text {
+    font-size: 1rem;
+    font-weight: 500;
+    color: #111827;
+    margin: 0 0 1.5rem 0;
+    line-height: 1.5;
+}
+
+/* Options */
+.student-question-options {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.student-question-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+    padding: 0.875rem 1.25rem;
+    border-radius: 0.5rem;
+    border: 1px solid #E5E7EB;
+    background: #fff;
+    transition: all 0.2s;
+}
+
+.student-question-option.is-correct-answer {
+    background: #ECFDF5;
+    border-color: #A7F3D0;
+}
+
+.student-question-option.is-wrong-answer {
+    background: #FEF2F2;
+    border-color: #FECACA;
+}
+
+.student-opt-label {
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    background: #F3F4F6;
+    color: #4B5563;
+    flex-shrink: 0;
+}
+
+.is-correct-answer .student-opt-label {
+    background: #059669;
+    color: #fff;
+}
+
+.is-wrong-answer .student-opt-label {
+    background: #DC2626;
+    color: #fff;
+}
+
+.student-opt-text {
+    font-size: 0.9375rem;
+    color: #374151;
+    line-height: 1.5;
+    flex: 1;
+    padding-top: 0.125rem;
+}
+
+.is-correct-answer .student-opt-text {
+    color: #065F46;
+    font-weight: 500;
+}
+
+.is-wrong-answer .student-opt-text {
+    color: #991B1B;
+}
+
+.student-opt-icon {
+    margin-top: 0.125rem;
+}
+
+.student-opt-icon.correct {
+    color: #059669;
+}
+
+.student-opt-icon.wrong {
+    color: #DC2626;
+}
+
+/* Explanation */
+.student-question-explanation {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    background: #F8FAFC;
+    border: 1px solid #E2E8F0;
+    border-radius: 0.5rem;
+}
+
+.student-explanation-title {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #64748B;
+    margin-bottom: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+}
+
+.student-explanation-text {
+    font-size: 0.875rem;
+    color: #334155;
+    line-height: 1.5;
+    margin: 0;
+}
+
+.student-result-hidden-msg {
+    text-align: center;
+    padding: 4rem 2rem;
+    background: #fff;
+    border-radius: 0.75rem;
+    border: 1px solid #E5E7EB;
+    color: #6B7280;
+}
+
+.student-result-hidden-icon {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 1rem;
+    color: #9CA3AF;
+}
+
+@media (max-width: 640px) {
+    .student-result-page {
+        padding: 1rem;
+    }
+
+    .student-result-stats {
+        flex-direction: column;
+        gap: 1rem;
+    }
+}

@@ -18,9 +18,9 @@ from typing import Optional
 from fastapi import APIRouter, UploadFile, File, HTTPException, status, Query
 from fastapi.responses import JSONResponse
 
-from parsing.schemas import DocumentParseResponse, CleanupStatistics
-from parsing.document_parser import DocumentParser
-from parsing.cleanup import cleanup_elements
+from ingestion.schemas import DocumentParseResponse, CleanupStatistics
+from ingestion.parser import DocumentParser
+from ingestion.cleanup import cleanup_elements
 
 # Suppress verbose PDF color space warnings
 logging.getLogger("pdfminer").setLevel(logging.ERROR)

@@ -9,7 +9,7 @@ NO document references, NO embeddings, NO vectors here.
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, Float, JSON, Enum as SQLEnum
 from sqlalchemy.orm import relationship, backref
 from sqlalchemy.sql import func
-from sqlalchemy.dialects.postgresql import UUID, TSVECTOR
+from sqlalchemy.dialects.postgresql import UUID, TSVECTOR, JSONB
 import uuid
 import enum
 from database.database import Base
@@ -65,6 +65,86 @@ class PaperShare(Base):
     def __repr__(self):
         return f"<PaperShare(paper_id={self.paper_id}, from={self.shared_by_id}, to={self.shared_with_id})>"
 
+
+# ==========================================
+# LOOKUP TABLES: DEPARTMENT, DIVISION, YEAR
+# ==========================================
+
+class Department(Base):
+    """Academic department (e.g. 'Computer Science', 'Information Technology')."""
+    __tablename__ = "departments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    students = relationship("Student", back_populates="department")
+
+    def __repr__(self):
+        return f"<Department(id={self.id}, name='{self.name}')>"
+
+
+class Division(Base):
+    """Class division (e.g. 'A', 'B', 'C')."""
+    __tablename__ = "divisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(10), unique=True, nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    students = relationship("Student", back_populates="division")
+
+    def __repr__(self):
+        return f"<Division(id={self.id}, name='{self.name}')>"
+
+
+class YearOfStudy(Base):
+    """Year of study (1–4 with label like FE, SE, TE, BE)."""
+    __tablename__ = "years_of_study"
+
+    id = Column(Integer, primary_key=True, index=True)
+    year = Column(Integer, unique=True, nullable=False, index=True)  # 1,2,3,4
+    label = Column(String(10), nullable=False)  # FE, SE, TE, BE
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    students = relationship("Student", back_populates="year_of_study")
+
+    def __repr__(self):
+        return f"<YearOfStudy(id={self.id}, year={self.year}, label='{self.label}')>"
+
+
+# ==========================================
+# AUTH: STUDENTS
+# ==========================================
+
+class Student(Base):
+    """Student user account for MCQ exam system."""
+    __tablename__ = "students"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    full_name = Column(String(255), nullable=False)
+    department_id = Column(Integer, ForeignKey("departments.id", ondelete="SET NULL"), nullable=True, index=True)
+    year_id = Column(Integer, ForeignKey("years_of_study.id", ondelete="SET NULL"), nullable=True, index=True)
+    division_id = Column(Integer, ForeignKey("divisions.id", ondelete="SET NULL"), nullable=True, index=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    refresh_token = Column(String(512), nullable=True, index=True)
+    face_photo_url = Column(String(500), nullable=True)  # Path to uploaded face photo
+    face_embedding = Column(JSONB, nullable=True)  # 512-dim ArcFace embedding for face verification
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    department = relationship("Department", back_populates="students")
+    year_of_study = relationship("YearOfStudy", back_populates="students")
+    division = relationship("Division", back_populates="students")
+
+    def __repr__(self):
+        return f"<Student(id={self.id}, email='{self.email}')>"
+
+
+# ==========================================
+# STRUCTURE: SUBJECT → UNIT → CONCEPT
+# ==========================================
 
 class Subject(Base):
     """
@@ -621,3 +701,171 @@ class GeneratedPaper(Base):
 
     def __repr__(self):
         return f"<GeneratedPaper(id={self.id}, subject_id={self.subject_id}, marks={self.total_marks})>"
+
+
+# ==========================================
+# LAYER 5: MCQ POOL & EXAMINATION SYSTEM
+# ==========================================
+
+class McqPoolQuestion(Base):
+    """
+    MCQ question in the pool. Can be AI-generated from ingested docs or manually added by teacher.
+    Tagged with unit, bloom's level, and difficulty for filtering.
+    """
+    __tablename__ = "mcq_pool_questions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    subject_id = Column(Integer, ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False, index=True)
+    unit_id = Column(Integer, ForeignKey("units.id", ondelete="SET NULL"), nullable=True, index=True)
+    question_text = Column(Text, nullable=False)
+    options = Column(JSON, nullable=False)  # [{"label":"A","text":"..."},{"label":"B","text":"..."},...]
+    correct_answer = Column(String(5), nullable=False)  # "A", "B", "C", "D"
+    explanation = Column(Text, nullable=True)
+    blooms_level = Column(String(20), nullable=True, index=True)  # remember, understand, apply, analyze, evaluate, create
+    difficulty = Column(String(10), nullable=True, index=True)  # easy, medium, hard
+    created_by = Column(Integer, ForeignKey("teachers.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    subject = relationship("Subject", backref="pool_questions")
+    unit = relationship("Unit", backref="pool_questions")
+    teacher = relationship("Teacher", foreign_keys=[created_by])
+
+    def __repr__(self):
+        return f"<McqPoolQuestion(id={self.id}, subject_id={self.subject_id}, unit_id={self.unit_id})>"
+
+
+class McqExam(Base):
+    """
+    MCQ examination created by a teacher.
+    exam_mode: 'static' = fixed paper for all students, 'dynamic' = random subset per student.
+    """
+    __tablename__ = "mcq_exams"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(255), nullable=False)
+    subject_id = Column(Integer, ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_by = Column(Integer, ForeignKey("teachers.id", ondelete="SET NULL"), nullable=True, index=True)
+    exam_mode = Column(String(10), nullable=False, default="static")  # 'static' or 'dynamic'
+    start_time = Column(DateTime(timezone=True), nullable=False)
+    end_time = Column(DateTime(timezone=True), nullable=False)
+    duration_minutes = Column(Integer, nullable=False)  # how long each student gets
+    total_questions = Column(Integer, nullable=False)  # for dynamic: how many random Qs to pick
+    show_result_to_student = Column(Boolean, default=False, nullable=False, server_default="false")
+    is_active = Column(Boolean, default=True, nullable=False, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    subject = relationship("Subject", backref="mcq_exams")
+    teacher = relationship("Teacher", foreign_keys=[created_by])
+    questions = relationship("McqExamQuestion", back_populates="exam", cascade="all, delete-orphan")
+    assignments = relationship("McqExamAssignment", back_populates="exam", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<McqExam(id={self.id}, title='{self.title}', mode='{self.exam_mode}')>"
+
+
+class McqExamQuestion(Base):
+    """
+    Links pool questions to an exam.
+    For static mode: defines exact question order.
+    For dynamic mode: defines the eligible pool of questions to randomize from.
+    """
+    __tablename__ = "mcq_exam_questions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    exam_id = Column(Integer, ForeignKey("mcq_exams.id", ondelete="CASCADE"), nullable=False, index=True)
+    pool_question_id = Column(Integer, ForeignKey("mcq_pool_questions.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_order = Column(Integer, nullable=False)
+
+    exam = relationship("McqExam", back_populates="questions")
+    pool_question = relationship("McqPoolQuestion")
+
+    def __repr__(self):
+        return f"<McqExamQuestion(exam_id={self.exam_id}, pool_q_id={self.pool_question_id}, order={self.question_order})>"
+
+
+class McqExamAssignment(Base):
+    """Assigns an exam to a specific dept + year + division combination."""
+    __tablename__ = "mcq_exam_assignments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    exam_id = Column(Integer, ForeignKey("mcq_exams.id", ondelete="CASCADE"), nullable=False, index=True)
+    department_id = Column(Integer, ForeignKey("departments.id", ondelete="CASCADE"), nullable=False, index=True)
+    year_id = Column(Integer, ForeignKey("years_of_study.id", ondelete="CASCADE"), nullable=False, index=True)
+    division_id = Column(Integer, ForeignKey("divisions.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    exam = relationship("McqExam", back_populates="assignments")
+    department = relationship("Department")
+    year_of_study = relationship("YearOfStudy")
+    division = relationship("Division")
+
+    def __repr__(self):
+        return f"<McqExamAssignment(exam_id={self.exam_id}, dept={self.department_id}, year={self.year_id}, div={self.division_id})>"
+
+
+class McqStudentExamInstance(Base):
+    """
+    Per-student exam instance. Tracks which questions they got (especially for dynamic mode),
+    when they started, and their submission status.
+    """
+    __tablename__ = "mcq_student_exam_instances"
+
+    id = Column(Integer, primary_key=True, index=True)
+    exam_id = Column(Integer, ForeignKey("mcq_exams.id", ondelete="CASCADE"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True)
+    questions_order = Column(JSON, nullable=False)  # list of pool_question_ids assigned to this student
+    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    submitted_at = Column(DateTime(timezone=True), nullable=True)
+    is_auto_submitted = Column(Boolean, default=False, nullable=False)
+    score = Column(Integer, nullable=True)
+    total_questions = Column(Integer, nullable=False)
+
+    exam = relationship("McqExam")
+    student = relationship("Student")
+    responses = relationship("McqStudentResponse", back_populates="instance", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<McqStudentExamInstance(exam_id={self.exam_id}, student_id={self.student_id}, score={self.score})>"
+
+
+class McqStudentResponse(Base):
+    """Individual answer for one question within a student's exam instance."""
+    __tablename__ = "mcq_student_responses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    instance_id = Column(Integer, ForeignKey("mcq_student_exam_instances.id", ondelete="CASCADE"), nullable=False, index=True)
+    pool_question_id = Column(Integer, ForeignKey("mcq_pool_questions.id", ondelete="CASCADE"), nullable=False, index=True)
+    selected_option = Column(String(5), nullable=True)  # "A", "B", "C", "D" or null if unanswered
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    instance = relationship("McqStudentExamInstance", back_populates="responses")
+    pool_question = relationship("McqPoolQuestion")
+
+    def __repr__(self):
+        return f"<McqStudentResponse(instance_id={self.instance_id}, q_id={self.pool_question_id}, ans='{self.selected_option}')>"
+
+
+# ==========================================
+# PROCTORING EVENTS
+# ==========================================
+
+class ProctoringEvent(Base):
+    """Proctoring event logged during an exam session."""
+    __tablename__ = "proctoring_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    instance_id = Column(Integer, ForeignKey("mcq_student_exam_instances.id", ondelete="CASCADE"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_type = Column(String(50), nullable=False, index=True)  # TAB_SWITCH, FULLSCREEN_EXIT, MULTIPLE_FACES, etc.
+    details = Column(Text, nullable=True)
+    snapshot_url = Column(String(500), nullable=True)  # Path to snapshot image
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    instance = relationship("McqStudentExamInstance", backref="proctoring_events")
+    student = relationship("Student", backref="proctoring_events")
+
+    def __repr__(self):
+        return f"<ProctoringEvent(id={self.id}, instance_id={self.instance_id}, type='{self.event_type}')>"
+

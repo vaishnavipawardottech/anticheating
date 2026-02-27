@@ -7,7 +7,7 @@ const IngestDocument = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const preSelectedSubjectId = searchParams.get('subjectId');
-  
+
   const [mode, setMode] = useState(preSelectedSubjectId ? 'existing' : 'new'); // 'new' or 'existing'
   const [existingSubjects, setExistingSubjects] = useState([]);
   const [selectedSubjectId, setSelectedSubjectId] = useState(preSelectedSubjectId || '');
@@ -21,6 +21,8 @@ const IngestDocument = () => {
   const [isProcessingToc, setIsProcessingToc] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSavingIndex, setIsSavingIndex] = useState(false);
+  const [indexSaved, setIndexSaved] = useState(false); // Track if index was already saved
+  const [savedSubjectId, setSavedSubjectId] = useState(null); // Subject ID from saved index
   const [viewMode, setViewMode] = useState('structured'); // 'structured' or 'text'
   const [editingUnit, setEditingUnit] = useState(null); // {unitIndex: 0, value: 'New Name'}
   const [editingConcept, setEditingConcept] = useState(null); // {unitIndex: 0, conceptIndex: 1, value: 'New Concept'}
@@ -69,6 +71,9 @@ const IngestDocument = () => {
     } else {
       setSelectedSubjectId('');
     }
+    // Reset index saved state when switching modes
+    setIndexSaved(false);
+    setSavedSubjectId(null);
   };
 
   const handleFileChange = (e) => {
@@ -268,6 +273,8 @@ const IngestDocument = () => {
       }
 
       console.log(`Index saved successfully!`);
+      setIndexSaved(true);
+      setSavedSubjectId(subjectId);
       alert(`Index saved!\n\nSubject: ${tocData.subject}\nUnits: ${tocData.units.length}\nConcepts: ${totalConcepts}\n\nCheck database for results.`);
     } catch (error) {
       console.error('Error:', error);
@@ -300,52 +307,62 @@ const IngestDocument = () => {
       let subjectId;
 
       if (mode === 'new') {
-        // Original flow for new subjects
-        // Step 1: Parse normalized TOC
-        console.log('Step 1: Parsing TOC...');
-        const tocResponse = await fetch('http://localhost:8001/structure/normalize', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ raw_text: normalizedToc, subject_hint: subjectName })
-        });
-        if (!tocResponse.ok) throw new Error('Failed to parse TOC');
-        const tocData = await tocResponse.json();
-
-        // Step 2: Create subject
-        console.log('Step 2: Creating subject...');
-        const subjectResponse = await fetch('http://localhost:8001/subjects/', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: tocData.subject, description: 'Auto-created', math_mode: mathMode })
-        });
-
-        if (!subjectResponse.ok) {
-          const existingSubjects = await fetch('http://localhost:8001/subjects/').then(r => r.json());
-          const existing = existingSubjects.find(s => s.name === tocData.subject);
-          if (!existing) throw new Error('Failed to create subject');
-          subjectId = existing.id;
+        if (indexSaved && savedSubjectId) {
+          // Index was already saved via "Save Index" button — skip structure creation
+          subjectId = savedSubjectId;
+          console.log(`Using already-saved subject ID: ${subjectId} (index was saved earlier)`);
         } else {
-          subjectId = (await subjectResponse.json()).id;
-        }
+          // Index not saved yet — save it now using normalizedJson directly
+          console.log('Index not saved yet, saving structure first...');
 
-        // Step 3: Create units and concepts
-        console.log('Step 3: Creating structure...');
-        for (const unit of tocData.units) {
-          const unitResp = await fetch('http://localhost:8001/units/', {
+          const tocData = normalizedJson;
+          if (!tocData) throw new Error('No TOC data available. Please process TOC first.');
+
+          // Step 1: Create subject
+          console.log('Step 1: Creating subject...');
+          const subjectResponse = await fetch('http://localhost:8001/subjects/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: unit.name, subject_id: subjectId, order: tocData.units.indexOf(unit) })
+            body: JSON.stringify({ name: tocData.subject, description: 'Auto-created', math_mode: mathMode })
           });
-          if (!unitResp.ok) continue;
-          const unitData = await unitResp.json();
 
-          for (const conceptName of unit.concepts) {
-            await fetch('http://localhost:8001/concepts/', {
+          if (!subjectResponse.ok) {
+            const existingSubjects = await fetch('http://localhost:8001/subjects/').then(r => r.json());
+            const existing = existingSubjects.find(s => s.name === tocData.subject);
+            if (!existing) throw new Error('Failed to create subject');
+            subjectId = existing.id;
+          } else {
+            subjectId = (await subjectResponse.json()).id;
+          }
+
+          // Step 2: Create units and concepts
+          console.log('Step 2: Creating structure...');
+          for (const unit of tocData.units) {
+            const unitResp = await fetch('http://localhost:8001/units/', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: conceptName, unit_id: unitData.id, order: unit.concepts.indexOf(conceptName) })
+              body: JSON.stringify({ name: unit.name, subject_id: subjectId, order: tocData.units.indexOf(unit) })
             });
+            if (!unitResp.ok) continue;
+            const unitData = await unitResp.json();
+
+            for (const conceptName of unit.concepts) {
+              if (!conceptName || !conceptName.trim()) continue;
+              await fetch('http://localhost:8001/concepts/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  name: conceptName.trim(),
+                  unit_id: unitData.id,
+                  order: unit.concepts.indexOf(conceptName),
+                  diagram_critical: false
+                })
+              });
+            }
           }
+
+          setIndexSaved(true);
+          setSavedSubjectId(subjectId);
         }
       } else {
         // Existing subject mode - use selected subject ID
@@ -360,7 +377,7 @@ const IngestDocument = () => {
       for (let i = 0; i < selectedFiles.length; i++) {
         const file = selectedFiles[i];
         console.log(`Step 4 (${i + 1}/${selectedFiles.length}): Uploading and processing ${file.name}...`);
-        
+
         try {
           const formData = new FormData();
           formData.append('file', file);
@@ -370,29 +387,29 @@ const IngestDocument = () => {
             if (!isNaN(n) && n > 0) formData.append('max_pages', n);
           }
 
-          const uploadResp = await fetch('http://localhost:8001/documents/upload-and-store', { 
-            method: 'POST', 
-            body: formData 
+          const uploadResp = await fetch('http://localhost:8001/documents/upload-and-store', {
+            method: 'POST',
+            body: formData
           });
-          
+
           if (!uploadResp.ok) {
             const errorData = await uploadResp.json();
             console.error(`Failed to upload ${file.name}:`, errorData);
             failedDocuments++;
             continue;
           }
-          
+
           const documentData = await uploadResp.json();
           console.log(`✓ Uploaded ${file.name} - Document ID: ${documentData.id}, Status: ${documentData.status}`);
           totalDocuments++;
-          
+
         } catch (error) {
           console.error(`Error processing ${file.name}:`, error);
           failedDocuments++;
         }
       }
 
-      const selectedSubject = mode === 'existing' 
+      const selectedSubject = mode === 'existing'
         ? existingSubjects.find(s => s.id === parseInt(selectedSubjectId))
         : { name: subjectName };
 
@@ -405,6 +422,8 @@ const IngestDocument = () => {
         setRawToc('');
         setNormalizedToc('');
         setNormalizedJson(null);
+        setIndexSaved(false);
+        setSavedSubjectId(null);
       } else {
         setSelectedSubjectId('');
       }
@@ -431,7 +450,7 @@ const IngestDocument = () => {
 
         <div className="ingest-content">
           <form onSubmit={handleSubmit} className="ingest-form">
-            
+
             {/* Mode Selection */}
             <div className="form-group">
               <label className="form-label">Select Mode</label>
@@ -473,7 +492,80 @@ const IngestDocument = () => {
               </div>
             )}
 
-            {/* New Subject Fields */}
+            {/* Document Upload — shown for both modes */}
+            <div className="form-group">
+              <label className="form-label">Upload Documents</label>
+              <div className="file-upload-area">
+                <input
+                  type="file"
+                  id="file-upload"
+                  onChange={handleFileChange}
+                  accept=".pdf,.pptx,.docx"
+                  className="file-input"
+                  multiple
+                />
+                <label htmlFor="file-upload" className="file-upload-label">
+                  {selectedFiles.length > 0 ? (
+                    <div className="file-selected">
+                      <Upload size={24} />
+                      <span>Click to add more files</span>
+                      <span className="file-hint">PDF, PPTX, or DOCX (max 50MB each)</span>
+                    </div>
+                  ) : (
+                    <div className="file-placeholder">
+                      <Upload size={32} />
+                      <span>Click to upload or drag and drop</span>
+                      <span className="file-hint">PDF, PPTX, or DOCX (max 50MB each)</span>
+                    </div>
+                  )}
+                </label>
+              </div>
+
+              {selectedFiles.length > 0 && (
+                <>
+                  <div className="form-group" style={{ marginTop: 8 }}>
+                    <label className="form-label">Max pages (testing)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={999}
+                      placeholder="Leave empty for full document"
+                      value={maxPages}
+                      onChange={(e) => setMaxPages(e.target.value)}
+                      className="form-input"
+                      style={{ maxWidth: 120 }}
+                    />
+                    <span className="file-hint" style={{ marginLeft: 8 }}>Only ingest first N pages to save OpenAI cost (e.g. 2 or 3)</span>
+                  </div>
+                  <div className="selected-files-list">
+                    <p className="files-count">{selectedFiles.length} file(s) selected</p>
+                    {selectedFiles.map((file, index) => (
+                      <div key={index} className="file-item">
+                        <div className="file-info">
+                          <FileText size={20} />
+                          <div className="file-details">
+                            <span className="file-name">{file.name}</span>
+                            <span className="file-size">
+                              {(file.size / 1024 / 1024).toFixed(2)} MB
+                            </span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveFile(index)}
+                          className="remove-file-btn"
+                          title="Remove file"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* New Subject Fields — Subject settings below document upload */}
             {mode === 'new' && (
               <>
                 <div className="form-group">
@@ -715,79 +807,6 @@ const IngestDocument = () => {
                 )}
               </>
             )}
-
-
-            <div className="form-group">
-              <label className="form-label">Upload Documents</label>
-              <div className="file-upload-area">
-                <input
-                  type="file"
-                  id="file-upload"
-                  onChange={handleFileChange}
-                  accept=".pdf,.pptx,.docx"
-                  className="file-input"
-                  multiple
-                />
-                <label htmlFor="file-upload" className="file-upload-label">
-                  {selectedFiles.length > 0 ? (
-                    <div className="file-selected">
-                      <Upload size={24} />
-                      <span>Click to add more files</span>
-                      <span className="file-hint">PDF, PPTX, or DOCX (max 50MB each)</span>
-                    </div>
-                  ) : (
-                    <div className="file-placeholder">
-                      <Upload size={32} />
-                      <span>Click to upload or drag and drop</span>
-                      <span className="file-hint">PDF, PPTX, or DOCX (max 50MB each)</span>
-                    </div>
-                  )}
-                </label>
-              </div>
-              
-              {selectedFiles.length > 0 && (
-                <>
-                <div className="form-group" style={{ marginTop: 8 }}>
-                  <label className="form-label">Max pages (testing)</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={999}
-                    placeholder="Leave empty for full document"
-                    value={maxPages}
-                    onChange={(e) => setMaxPages(e.target.value)}
-                    className="form-input"
-                    style={{ maxWidth: 120 }}
-                  />
-                  <span className="file-hint" style={{ marginLeft: 8 }}>Only ingest first N pages to save OpenAI cost (e.g. 2 or 3)</span>
-                </div>
-                <div className="selected-files-list">
-                  <p className="files-count">{selectedFiles.length} file(s) selected</p>
-                  {selectedFiles.map((file, index) => (
-                    <div key={index} className="file-item">
-                      <div className="file-info">
-                        <FileText size={20} />
-                        <div className="file-details">
-                          <span className="file-name">{file.name}</span>
-                          <span className="file-size">
-                            {(file.size / 1024 / 1024).toFixed(2)} MB
-                          </span>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveFile(index)}
-                        className="remove-file-btn"
-                        title="Remove file"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                </>
-              )}
-            </div>
           </form>
         </div>
 

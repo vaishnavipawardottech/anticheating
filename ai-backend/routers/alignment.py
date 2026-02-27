@@ -13,7 +13,7 @@ import json
 
 from database.database import get_db
 from database.models import Concept, Unit, AlignedElement, ParsedElement, DocumentChunk, Document
-from parsing.schemas import SemanticElement
+from ingestion.schemas import SemanticElement
 from routers.structure_ai import call_gpt4o_mini_structured
 from embeddings.qdrant_manager import get_qdrant_manager
 from qdrant_client.models import PointStruct

@@ -1,0 +1,177 @@
+.mcq-list-container {
+    width: 100%;
+    height: 100%;
+    background-color: white;
+}
+
+.mcq-list-card {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.mcq-list-header {
+    padding: 1rem;
+    border-bottom: 1px solid #E5E7EB;
+    background-color: white;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.mcq-list-header-info h1 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0;
+    color: #111827;
+}
+
+.mcq-list-header-info p {
+    font-size: 0.8rem;
+    color: #6B7280;
+    margin: 0;
+}
+
+.mcq-list-create-btn {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.5rem 1rem;
+    background: #0061a1;
+    color: #fff;
+    border-radius: 0.375rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    text-decoration: none;
+    border: none;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.mcq-list-create-btn:hover {
+    background: #004d82;
+}
+
+.mcq-list-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem 2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+}
+
+/* Exam card */
+.mcq-exam-card {
+    border: 1px solid #E5E7EB;
+    border-radius: 0.5rem;
+    padding: 0.875rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    transition: border-color 0.2s;
+}
+
+.mcq-exam-card:hover {
+    border-color: #0061a1;
+}
+
+.mcq-exam-card-info {
+    flex: 1;
+}
+
+.mcq-exam-card-title-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+}
+
+.mcq-exam-card-title {
+    font-weight: 600;
+    font-size: 0.9375rem;
+    color: #111827;
+}
+
+.mcq-status-badge {
+    font-size: 0.7rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 9999px;
+    font-weight: 500;
+}
+
+.mcq-mode-badge {
+    font-size: 0.7rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 9999px;
+}
+
+.mcq-exam-card-meta {
+    display: flex;
+    gap: 1rem;
+    font-size: 0.8rem;
+    color: #6B7280;
+}
+
+.mcq-exam-card-meta span {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.mcq-exam-card-actions {
+    display: flex;
+    gap: 0.375rem;
+}
+
+.mcq-icon-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0.375rem;
+    border-radius: 0.25rem;
+    display: flex;
+    align-items: center;
+    text-decoration: none;
+    transition: background 0.2s;
+}
+
+.mcq-icon-btn:hover {
+    background: #F3F4F6;
+}
+
+.mcq-icon-btn.view {
+    color: #0061a1;
+}
+
+.mcq-icon-btn.delete {
+    color: #EF4444;
+}
+
+.mcq-list-empty {
+    padding: 3rem;
+    text-align: center;
+    color: #6B7280;
+    border: 1px solid #E5E7EB;
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+}
+
+@media (max-width: 640px) {
+    .mcq-list-content {
+        padding: 1rem;
+    }
+
+    .mcq-exam-card {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .mcq-exam-card-actions {
+        align-self: flex-end;
+    }
+}

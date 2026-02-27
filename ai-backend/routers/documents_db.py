@@ -618,7 +618,7 @@ async def upload_and_store_document(
                 
                 if concepts:
                     # Import align_batch here to avoid circular dependency
-                    from routers.alignment import align_batch
+                    from routers.alignment import align_batch, chunk_list
                     
                     # Prepare chunks as SemanticElements for alignment
                     elements_for_align = [
@@ -633,8 +633,20 @@ async def upload_and_store_document(
                         for c in saved_chunks
                     ]
                     
-                    # Call Gemini AI to align chunks
-                    batch_results = await align_batch(elements_for_align, concepts)
+                    # Process in batches of 25 to avoid oversized prompts
+                    ALIGN_BATCH_SIZE = 25
+                    all_batch_results = []
+                    total_batches = (len(elements_for_align) + ALIGN_BATCH_SIZE - 1) // ALIGN_BATCH_SIZE
+                    for batch_idx, batch in enumerate(chunk_list(elements_for_align, ALIGN_BATCH_SIZE)):
+                        print(f"   Step 10: Aligning batch {batch_idx + 1}/{total_batches} ({len(batch)} chunks)...")
+                        try:
+                            results = await align_batch(batch, concepts)
+                            all_batch_results.extend(results)
+                        except Exception as batch_err:
+                            print(f"   Step 10: Batch {batch_idx + 1} failed: {batch_err}, skipping")
+                            for elem in batch:
+                                all_batch_results.append({"order": elem.order, "concept_id": None, "confidence": 0.0})
+                    batch_results = all_batch_results
                     chunk_index_to_result = {r["order"]: r for r in batch_results}
                     
                     # Build concept_id -> unit_id mapping

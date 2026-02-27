@@ -83,40 +83,34 @@ const Sidebar = () => {
       ]
     },
     {
-      key: 'exams',
-      icon: <FileText size={20} />,
+      key: 'mcq-pool',
+      icon: <Database size={20} />,
+      text: 'MCQ Pool',
+      submenu: [
+        { icon: <List size={18} />, text: 'All Questions', path: '/mcq-pool' },
+        { icon: <Sparkles size={18} />, text: 'Generate MCQs', path: '/mcq-pool/generate' },
+      ]
+    },
+    {
+      key: 'mcq-exams',
+      icon: <ClipboardList size={20} />,
       text: 'MCQ Exams',
       submenu: [
-        { icon: <List size={18} />, text: 'All Exams', path: '/exams' },
-        { icon: <Plus size={18} />, text: 'Create Exam', path: '/exams/create' },
-        { icon: <Calendar size={18} />, text: 'Scheduled', path: '/exams/scheduled' }
+        { icon: <List size={18} />, text: 'All Exams', path: '/mcq-exams' },
+        { icon: <Plus size={18} />, text: 'Create Exam', path: '/mcq-exams/create' },
       ]
     },
-    // {
-    //   key: 'questions',
-    //   icon: <HelpCircle size={20} />,
-    //   text: 'Question Bank',
-    //   submenu: [
-    //     { icon: <Book size={18} />, text: 'Browse Bank', path: '/questions' },
-    //     { icon: <Plus size={18} />, text: 'Add Question', path: '/questions/create' },
-    //     { icon: <FileInput size={18} />, text: 'Import Questions', path: '/questions/import' }
-    //   ]
-    // },
+    {
+      key: 'students',
+      icon: <Users size={20} />,
+      text: 'Students',
+      path: '/students'
+    },
     {
       key: 'users',
-      icon: <Users size={20} />,
-      text: 'Users',
-      submenu: [
-        { icon: <List size={18} />, text: 'All Users', path: '/users' },
-        { icon: <UserPlus size={18} />, text: 'Add User', path: '/users/create' },
-        { icon: <UserCog size={18} />, text: 'Roles', path: '/users/roles' }
-      ]
-    },
-    {
-      key: 'results',
-      icon: <BarChart3 size={20} />,
-      text: 'Results',
-      path: '/results'
+      icon: <UserCog size={20} />,
+      text: 'Teachers',
+      path: '/users'
     },
     {
       key: 'settings',

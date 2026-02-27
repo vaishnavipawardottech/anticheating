@@ -18,6 +18,24 @@ import AllPapers from './pages/AllPapers'
 import MCQPapers from './pages/MCQPapers'
 import SubjectivePapers from './pages/SubjectivePapers'
 import Teachers from './pages/Teachers'
+
+// MCQ Examination System (teacher)
+import McqPoolList from './pages/McqPoolList'
+import McqPoolGenerate from './pages/McqPoolGenerate'
+import McqExamList from './pages/McqExamList'
+import McqExamCreate from './pages/McqExamCreate'
+import McqExamDetail from './pages/McqExamDetail'
+import StudentsList from './pages/StudentsList'
+
+import Dashboard from './pages/Dashboard'
+
+// Student pages
+import StudentLogin from './pages/StudentLogin'
+import StudentExamList from './pages/StudentExamList'
+import StudentExamTake from './pages/StudentExamTake'
+import StudentProfile from './pages/StudentProfile'
+import StudentExamResult from './pages/StudentExamResult'
+
 import './App.css'
 
 // Redirects unauthenticated users to /login
@@ -31,16 +49,19 @@ function App() {
     <Router>
       <Routes>
         <Route path="/login" element={<Login />} />
+
+        {/* Student routes (separate auth) */}
+        <Route path="/student/login" element={<StudentLogin />} />
+        <Route path="/student/exams" element={<StudentExamList />} />
+        <Route path="/student/exams/:examId/take" element={<StudentExamTake />} />
+        <Route path="/student/exams/:examId/result" element={<StudentExamResult />} />
+        <Route path="/student/profile" element={<StudentProfile />} />
+
         <Route path="/*" element={
           <PrivateRoute>
             <Layout>
               <Routes>
-                <Route path="/" element={
-                  <div className="App">
-                    <h1>Smart Assessment</h1>
-                    <p>Question Paper and MCQ Exam Generator</p>
-                  </div>
-                } />
+                <Route path="/" element={<Dashboard />} />
                 {/* Profile */}
                 <Route path="/profile" element={<Profile />} />
                 <Route path="/profile/change-password" element={<ChangePassword />} />
@@ -58,6 +79,14 @@ function App() {
                 <Route path="/papers/mcq" element={<MCQPapers />} />
                 <Route path="/papers/subjective" element={<SubjectivePapers />} />
                 <Route path="/papers/:paperId" element={<ViewPaper />} />
+
+                {/* MCQ Examination System */}
+                <Route path="/mcq-pool" element={<McqPoolList />} />
+                <Route path="/mcq-pool/generate" element={<McqPoolGenerate />} />
+                <Route path="/mcq-exams" element={<McqExamList />} />
+                <Route path="/mcq-exams/create" element={<McqExamCreate />} />
+                <Route path="/mcq-exams/:examId" element={<McqExamDetail />} />
+                <Route path="/students" element={<StudentsList />} />
 
                 {/* Teachers (admin) */}
                 <Route path="/users" element={<Teachers />} />
