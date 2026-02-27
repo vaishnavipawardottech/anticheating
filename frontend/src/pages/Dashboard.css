@@ -1,0 +1,312 @@
+/* Dashboard — matches the project's minimal design language */
+
+.dash-container {
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+    padding: 1.5rem 2rem;
+    background: #F9FAFB;
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+/* ── Header ── */
+.dash-header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    flex-shrink: 0;
+}
+
+.dash-title {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: #111827;
+    margin: 0;
+}
+
+.dash-subtitle {
+    font-size: 0.8125rem;
+    color: #6B7280;
+    margin: 0.2rem 0 0;
+}
+
+/* ── Loading ── */
+.dash-loading {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #9CA3AF;
+    font-size: 0.875rem;
+}
+
+/* ── Stat cards ── */
+.dash-stats-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.875rem;
+}
+
+.dash-stat-card {
+    background: #fff;
+    border: 1px solid #E5E7EB;
+    border-radius: 0.625rem;
+    padding: 1rem 1.25rem;
+    display: flex;
+    align-items: center;
+    gap: 0.875rem;
+    transition: border-color 0.2s;
+}
+
+.dash-stat-card:hover {
+    border-color: #BFDBFE;
+}
+
+.dash-stat-icon {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 0.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.dash-stat-body {
+    min-width: 0;
+}
+
+.dash-stat-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #111827;
+    line-height: 1;
+}
+
+.dash-stat-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #374151;
+    margin-top: 0.2rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.dash-stat-sub {
+    font-size: 0.7rem;
+    color: #9CA3AF;
+    margin-top: 0.15rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ── Chart row ── */
+.dash-charts-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.875rem;
+}
+
+/* ── Shared card ── */
+.dash-card {
+    background: #fff;
+    border: 1px solid #E5E7EB;
+    border-radius: 0.625rem;
+    padding: 1.25rem;
+}
+
+.dash-card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 1rem;
+}
+
+.dash-card-header svg {
+    color: #0061a1;
+    flex-shrink: 0;
+}
+
+.dash-card-link {
+    margin-left: auto;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: #0061a1;
+    text-decoration: none;
+}
+
+.dash-card-link:hover {
+    text-decoration: underline;
+}
+
+/* ── Chart empty state ── */
+.dash-empty-chart {
+    height: 200px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #D1D5DB;
+    font-size: 0.875rem;
+}
+
+/* ── Legend ── */
+.dash-legend-row {
+    display: flex;
+    gap: 1.25rem;
+    margin-top: 0.875rem;
+    padding-top: 0.875rem;
+    border-top: 1px solid #F3F4F6;
+}
+
+.dash-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.75rem;
+    color: #6B7280;
+}
+
+.dash-legend-item strong {
+    color: #111827;
+    font-weight: 700;
+}
+
+.dash-legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+/* ── Table card ── */
+.dash-table-card {
+    /* inherits dash-card */
+}
+
+.dash-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8125rem;
+}
+
+.dash-table thead tr {
+    border-bottom: 1px solid #F3F4F6;
+}
+
+.dash-table th {
+    text-align: left;
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: #9CA3AF;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0 0.75rem 0.625rem;
+}
+
+.dash-table th:first-child {
+    padding-left: 0;
+}
+
+.dash-table tbody tr {
+    border-bottom: 1px solid #F9FAFB;
+    transition: background 0.15s;
+}
+
+.dash-table tbody tr:last-child {
+    border-bottom: none;
+}
+
+.dash-table tbody tr:hover {
+    background: #F9FAFB;
+}
+
+.dash-table td {
+    padding: 0.625rem 0.75rem;
+    vertical-align: middle;
+    color: #111827;
+}
+
+.dash-table td:first-child {
+    padding-left: 0;
+}
+
+.dash-exam-link {
+    font-weight: 500;
+    color: #111827;
+    text-decoration: none;
+}
+
+.dash-exam-link:hover {
+    color: #0061a1;
+    text-decoration: underline;
+}
+
+.dash-cell-muted {
+    color: #6B7280 !important;
+}
+
+/* ── Status badge (table) ── */
+.dash-status-badge {
+    display: inline-block;
+    padding: 0.15rem 0.55rem;
+    border-radius: 9999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+}
+
+/* ── Tooltip ── */
+.dash-tooltip {
+    background: #fff;
+    border: 1px solid #E5E7EB;
+    border-radius: 0.375rem;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.dash-tooltip-label {
+    font-size: 0.7rem;
+    color: #9CA3AF;
+    margin: 0 0 0.25rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.dash-tooltip p {
+    margin: 0;
+    color: #374151;
+}
+
+/* ── Responsive ── */
+@media (max-width: 1024px) {
+    .dash-stats-row {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .dash-charts-row {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 640px) {
+    .dash-container {
+        padding: 1rem;
+    }
+
+    .dash-stats-row {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .dash-table th:nth-child(n+3),
+    .dash-table td:nth-child(n+3) {
+        display: none;
+    }
+}

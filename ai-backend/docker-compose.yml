@@ -48,6 +48,19 @@ services:
     networks:
       - academic_network
 
+  # ==========================================
+  # REDIS - Caching & Message Broker
+  # ==========================================
+  redis:
+    image: redis:7-alpine
+    container_name: academic_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - academic_network
+
 networks:
   academic_network:
     driver: bridge
@@ -55,3 +68,4 @@ networks:
 volumes:
   postgres_data:
   qdrant_storage:
+  redis_data:

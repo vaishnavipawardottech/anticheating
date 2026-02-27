@@ -7,8 +7,8 @@ from fastapi import APIRouter, HTTPException
 from typing import List
 from pydantic import BaseModel
 
-from parsing.schemas import SemanticElement, CleanupStatistics
-from parsing.cleanup import cleanup_elements
+from ingestion.schemas import SemanticElement, CleanupStatistics
+from ingestion.cleanup import cleanup_elements
 
 router = APIRouter(prefix="/cleanup", tags=["cleanup"])
 

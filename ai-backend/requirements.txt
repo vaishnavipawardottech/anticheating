@@ -68,6 +68,9 @@ json-repair>=0.58.0  # Fix malformed JSON from LLM responses
 # Vector Database
 qdrant-client
 
+# Redis (MCQ auto-save)
+redis>=5.0.0
+
 # Document Parsing (unstructured library)
 unstructured[pdf]>=0.10.0
 python-pptx>=0.6.0

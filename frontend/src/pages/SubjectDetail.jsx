@@ -87,7 +87,7 @@ const SubjectDetail = () => {
                         <ArrowLeft size={20} />
                     </button>
                     <h1 className="subject-detail-title">{subject.name}</h1>
-                    <button 
+                    <button
                         className="add-docs-btn"
                         onClick={() => navigate(`/ingest?subjectId=${subjectId}`)}
                         title="Add more documents to this subject"
