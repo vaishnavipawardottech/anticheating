@@ -68,3 +68,6 @@ htmlcov/
 
 # Huey
 huey.db
+
+# Snapshots
+snapshots/

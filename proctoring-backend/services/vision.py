@@ -3,10 +3,17 @@ import numpy as np
 import base64
 from deepface import DeepFace
 
-def process_and_extract_embedding(base64_string: str) -> list:
+def process_and_extract_embedding(base64_string: str, enforce_detection: bool = True) -> list:
     """
     Takes a Base64 string, runs the OpenCV enhancement pipeline, 
     and returns a 512-dimensional ArcFace embedding.
+    
+    Args:
+        base64_string: Base64 encoded image
+        enforce_detection: If True, raises exception when no face found. If False, returns None.
+    
+    Returns:
+        512-dimensional embedding list, or None if no face detected and enforce_detection=False
     """
     # 1. Strip the HTML prefix if React sends it (e.g., "data:image/jpeg;base64,...")
     if "," in base64_string:
@@ -27,15 +34,19 @@ def process_and_extract_embedding(base64_string: str) -> list:
     final_img = cv2.cvtColor(clean_gray, cv2.COLOR_GRAY2RGB)
 
     # 5. Extract ArcFace Embedding
-    # enforce_detection=True ensures it throws an error if the room is too dark to see a face
-    results = DeepFace.represent(
-        img_path=final_img, 
-        model_name="ArcFace", 
-        enforce_detection=True
-    )
-    
-    # DeepFace returns a list of faces found. We take the embedding of the first face.
-    return results[0]["embedding"]
+    try:
+        results = DeepFace.represent(
+            img_path=final_img, 
+            model_name="ArcFace", 
+            enforce_detection=True
+        )
+        # DeepFace returns a list of faces found. We take the embedding of the first face.
+        return results[0]["embedding"]
+    except Exception as e:
+        if enforce_detection:
+            raise  # Re-raise the exception for registration where we need a valid face
+        else:
+            return None  # Return None for continuous verification to handle gracefully
 
 def compare_faces(saved_embedding: list, live_embedding: list) -> bool:
     """
@@ -55,4 +66,5 @@ def compare_faces(saved_embedding: list, live_embedding: list) -> bool:
     distance = 1 - similarity
     
     # If distance is less than 0.68, it is the same person!
-    return distance < 0.68
+    # Convert numpy.bool_ to Python bool for JSON serialization
+    return bool(distance < 0.68)
